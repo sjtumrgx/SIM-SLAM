@@ -97,7 +97,7 @@
 | Isaac Sim / Isaac Lab | Isaac Sim 4.5 / 5.x + Isaac Lab 对应版本 | 本仓库 `setup.py` 标注 Python `>=3.10`，classifier 包含 Isaac Sim 4.5 / 5.0 |
 | Python | 3.10 或 3.11 | 取决于你安装的 Isaac Lab / Isaac Sim 版本；不要混用多个 Python 解释器 |
 | ROS 2 | Humble Hawksbill | Humble 官方 apt 包面向 Ubuntu 22.04 |
-| FAST-LIO2 | ROS 2 fork | 子模块指向 `Kuriharamio/FAST_LIO` 的 `ROS2` 分支 |
+| FAST-LIO2 | ROS 2 fork | 已 vendored 到 `ros2_ws/src/FAST_LIO`，保留 GPL-2.0 协议文件 |
 | Livox 驱动 | Livox ROS Driver 2 | Humble 下使用 `./build.sh humble` |
 
 **建议原则：**
@@ -111,7 +111,7 @@
 
 以下流程假设你使用 Ubuntu 22.04，并且已经安装好 NVIDIA 驱动。
 
-### 1. 获取仓库和子模块
+### 1. 获取仓库和 Livox 子模块
 
 ```bash
 # 如需代理，请先见“代理配置：7890 端口”章节
@@ -335,7 +335,7 @@ ros2 run demo_nodes_cpp talker
 cd /path/to/SIM-SLAM/ros2_ws
 source /opt/ros/humble/setup.zsh
 
-# 初始化子模块；如果目录为空，必须执行
+# 初始化 Livox 子模块；FAST_LIO 已随主仓库 vendored
 cd /path/to/SIM-SLAM
 git submodule update --init --recursive
 
@@ -442,7 +442,9 @@ sudo ldconfig
 
 默认会安装库到 `/usr/local/lib`、头文件到 `/usr/local/include`。
 
-### 3. 初始化本仓库子模块
+### 3. 初始化本仓库 Livox 子模块
+
+FAST_LIO 已经作为普通源码目录 vendored 到 `ros2_ws/src/FAST_LIO`，不再需要单独拉取 FAST_LIO 子模块。仍需初始化 Livox 驱动子模块：
 
 ```bash
 cd /path/to/SIM-SLAM
@@ -453,20 +455,18 @@ ls ros2_ws/src/FAST_LIO
 ls ros2_ws/src/livox_ros_driver2
 ```
 
-本仓库 `.gitmodules` 中的默认来源：
+本仓库 `.gitmodules` 中只保留 Livox ROS Driver 2：
 
 ```text
-ros2_ws/src/FAST_LIO          -> https://github.com/Kuriharamio/FAST_LIO.git, branch ROS2
 ros2_ws/src/livox_ros_driver2 -> https://github.com/Ericsii/livox_ros_driver2.git
 ```
 
-如果你的网络环境无法拉取子模块，可以手动克隆：
+如果你的网络环境无法拉取 Livox 子模块，可以手动克隆：
 
 ```bash
 cd /path/to/SIM-SLAM/ros2_ws/src
-rm -rf FAST_LIO livox_ros_driver2
+rm -rf livox_ros_driver2
 
-git clone -b ROS2 https://github.com/Kuriharamio/FAST_LIO.git FAST_LIO
 git clone https://github.com/Ericsii/livox_ros_driver2.git livox_ros_driver2
 ```
 

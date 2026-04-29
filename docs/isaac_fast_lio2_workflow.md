@@ -37,10 +37,11 @@ source install/setup.zsh 2>/dev/null || true
 
 Do not blindly mix the Isaac Conda Python environment with the system ROS 2 Python environment.
 
-## Stage 0: Submodules and FAST-LIO Input Contract
+## Stage 0: Livox Submodule and FAST-LIO Input Contract
 
 ```bash
 cd /path/to/RC2026_SIM
+# FAST_LIO 已 vendored；该命令只初始化 livox_ros_driver2
 git submodule update --init --recursive
 cd ros2_ws
 source /opt/ros/humble/setup.zsh
@@ -48,7 +49,7 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon list | grep -Ei 'fast|lio|livox|deploy_policy'
 ```
 
-Before implementing or changing the adapter, inspect the checked-out FAST-LIO2 code and record:
+Before implementing or changing the adapter, inspect the vendored FAST-LIO2 code and record:
 
 - accepted point message types,
 - accepted field name: `time` or `t`,
@@ -182,7 +183,7 @@ IMU and cloud values should change during motion.
 ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py
 ```
 
-Check outputs. Topic names may vary by the FAST-LIO2 fork after submodule inspection:
+Check outputs. Topic names may vary by the vendored FAST-LIO2 fork:
 
 ```bash
 ros2 topic list | grep -E 'lio|cloud|odom|path|map|Odometry'
@@ -251,7 +252,7 @@ ros2 launch deploy_policy go2_controller.launch.py \
 Collect these before declaring the workflow complete:
 
 ```bash
-git submodule status
+git submodule status  # should list livox_ros_driver2; FAST_LIO is vendored
 colcon list | grep -Ei 'fast|lio|livox|deploy_policy'
 ros2 topic list
 ros2 topic hz /imu
