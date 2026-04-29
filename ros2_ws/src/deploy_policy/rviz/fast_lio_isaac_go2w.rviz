@@ -1,0 +1,28 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: FAST-LIO Cloud
+      Topic:
+        Value: /cloud_registered
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: FAST-LIO Odometry
+      Topic:
+        Value: /Odometry
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: FAST-LIO Path
+      Topic:
+        Value: /path
+  Enabled: true
+  Global Options:
+    Fixed Frame: camera_init
+  Name: root

@@ -16,6 +16,7 @@
 - [常用任务与命令](#常用任务与命令)
 - [ROS 2 Humble 安装与 ros2_ws 构建](#ros-2-humble-安装与-ros2_ws-构建)
 - [FAST-LIO2 / Livox ROS Driver 2 安装教程](#fast-lio2--livox-ros-driver-2-安装教程)
+- [Isaac Sim → ROS 2 → FAST-LIO2 v1 流程](#isaac-sim--ros-2--fast-lio2-v1-流程)
 - [能否把 ROS 2 直接装进 Conda？](#能否把-ros-2-直接装进-conda)
 - [代理配置：7890 端口](#代理配置7890-端口)
 - [常见问题排查](#常见问题排查)
@@ -388,6 +389,19 @@ ArmDog 控制器会根据 `dog_type` 参数使用带后缀的 topic，例如 `jo
 ## FAST-LIO2 / Livox ROS Driver 2 安装教程
 
 FAST-LIO2 建图需要 LiDAR 点云与 IMU 时间同步。真实 Livox 雷达一般需要 `Livox-SDK2` + `livox_ros_driver2`；Isaac 仿真点云则需要确保消息类型、时间戳字段与 FAST-LIO2 配置匹配。
+
+## Isaac Sim → ROS 2 → FAST-LIO2 v1 流程
+
+本仓库现在提供一条面向 v1 联调的 Go2W + Robocon2026 场景流程：
+
+- Isaac 侧入口：`scripts/ros2/isaac_fast_lio2_go2w_scene.py`
+- Isaac 节点 schema 检查：`scripts/ros2/check_isaac_ros2_node_schema.py`
+- ROS 点云适配/硬门禁：`ros2_ws/src/deploy_policy/scripts/isaac_pointcloud_time_adapter.py` 与 `check_pointcloud_timing.py`
+- FAST-LIO2 配置/启动：`ros2_ws/src/deploy_policy/config/fast_lio/isaac_go2w.yaml` 与 `fast_lio_isaac_go2w.launch.py`
+- 完整 runbook：[`docs/isaac_fast_lio2_workflow.md`](docs/isaac_fast_lio2_workflow.md)
+- FAST-LIO2 PointCloud2 字段契约：[`docs/fast_lio2_input_contract.md`](docs/fast_lio2_input_contract.md)
+
+关键约束：`/points_fast_lio` 必须包含 FAST-LIO2 可读取的逐点 `time`/`t` 字段，且 `timestamp_unit` 与字段单位一致。只看到 `/points_raw` 或 FAST-LIO2 进程启动不算完成。
 
 ### 0. 总体构建顺序
 

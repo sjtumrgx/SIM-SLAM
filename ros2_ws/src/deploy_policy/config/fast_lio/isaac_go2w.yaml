@@ -1,0 +1,55 @@
+/**:
+  ros__parameters:
+    feature_extract_enable: false
+    point_filter_num: 4
+    max_iteration: 3
+    filter_size_surf: 0.5
+    filter_size_map: 0.5
+    cube_side_length: 1000.0
+    runtime_pos_log_enable: false
+    map_file_path: "./isaac_go2w_map.pcd"
+
+    common:
+      lid_topic: "/points_fast_lio"
+      imu_topic: "/imu"
+      # Isaac publishes /clock; keep hardware time sync disabled unless Stage 0 proves otherwise.
+      time_sync_en: false
+      time_offset_lidar_to_imu: 0.0
+
+    preprocess:
+      # 2 = Velodyne-style PointCloud2 in the Kuriharamio FAST_LIO ROS2 fork examples.
+      # Re-check after submodule Stage 0 before final execution.
+      lidar_type: 2
+      scan_line: 32
+      scan_rate: 10
+      # 0=second, 1=millisecond, 2=microsecond, 3=nanosecond.
+      # This must match /points_fast_lio time/t field produced by the adapter.
+      timestamp_unit: 0
+      blind: 0.2
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 100.0
+      extrinsic_est_en: false
+      # Initial fixed LiDAR-in-IMU extrinsic for the planned Isaac mounting.
+      # Replace with measured values after final sensor prim placement is verified.
+      extrinsic_T: [0.0, 0.0, 0.20]
+      extrinsic_R: [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+
+    publish:
+      # This FAST_LIO fork hard-codes output frames camera_init/body in laserMapping.cpp.
+      # Keep RViz fixed frame on camera_init unless the fork is patched.
+      path_en: true
+      scan_publish_en: true
+      dense_publish_en: true
+      scan_bodyframe_pub_en: true
+
+    pcd_save:
+      pcd_save_en: false
+      interval: -1
