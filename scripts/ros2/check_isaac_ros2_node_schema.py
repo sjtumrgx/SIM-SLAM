@@ -32,10 +32,45 @@ REQUIRED_NODE_TYPE_CANDIDATES = {
         "isaacsim.ros2.bridge.ROS2PublishImu",
         "omni.isaac.ros2_bridge.ROS2PublishImu",
     ],
+    "read_imu": [
+        "isaacsim.sensors.physics.IsaacReadIMU",
+        "omni.isaac.sensor.IsaacReadIMU",
+    ],
     "publish_transform_tree": [
         "isaacsim.ros2.bridge.ROS2PublishTransformTree",
         "omni.isaac.ros2_bridge.ROS2PublishTransformTree",
     ],
+}
+
+REQUIRED_NODE_ATTRIBUTES = {
+    "publish_imu": {
+        "node_type": "isaacsim.ros2.bridge.ROS2PublishImu",
+        "attributes": [
+            "inputs:angularVelocity",
+            "inputs:context",
+            "inputs:execIn",
+            "inputs:frameId",
+            "inputs:linearAcceleration",
+            "inputs:orientation",
+            "inputs:timeStamp",
+            "inputs:topicName",
+        ],
+        "note": "Isaac Sim 5.1 publishes IMU from explicit vector/quaternion inputs; do not wire inputs:targetPrim here.",
+    },
+    "read_imu": {
+        "node_type": "isaacsim.sensors.physics.IsaacReadIMU",
+        "attributes": [
+            "inputs:execIn",
+            "inputs:imuPrim",
+            "inputs:readGravity",
+            "outputs:angVel",
+            "outputs:execOut",
+            "outputs:linAcc",
+            "outputs:orientation",
+            "outputs:sensorTime",
+        ],
+        "note": "Read an IsaacImuSensor prim and connect its outputs to ROS2PublishImu.",
+    },
 }
 
 
@@ -49,6 +84,58 @@ def _get_registered_node_types(og):
                 pass
     # Older Isaac builds do not expose an easy public list in every context.
     return set()
+
+
+def _probe_required_attributes(og):
+    keys = og.Controller.Keys
+    graph_path = "/IsaacFastLioSchemaCheck"
+    results = {}
+    node_names = {
+        requirement: f"Probe_{requirement}"
+        for requirement in REQUIRED_NODE_ATTRIBUTES
+    }
+    try:
+        og.Controller.edit(
+            {"graph_path": graph_path, "evaluator_name": "execution"},
+            {
+                keys.CREATE_NODES: [
+                    (node_names[requirement], spec["node_type"])
+                    for requirement, spec in REQUIRED_NODE_ATTRIBUTES.items()
+                ]
+            },
+        )
+    except Exception as exc:
+        return {
+            requirement: {
+                "status": "probe_failed",
+                "node_type": spec["node_type"],
+                "error": str(exc),
+                "note": spec["note"],
+            }
+            for requirement, spec in REQUIRED_NODE_ATTRIBUTES.items()
+        }
+
+    for requirement, spec in REQUIRED_NODE_ATTRIBUTES.items():
+        node_name = node_names[requirement]
+        node_path = f"{graph_path}/{node_name}"
+        try:
+            node = og.Controller.node(node_path)
+            missing = [attr for attr in spec["attributes"] if not node.get_attribute_exists(attr)]
+            results[requirement] = {
+                "status": "present" if not missing else "missing_attributes",
+                "node_type": spec["node_type"],
+                "missing_attributes": missing,
+                "has_legacy_targetPrim": node.get_attribute_exists("inputs:targetPrim"),
+                "note": spec["note"],
+            }
+        except Exception as exc:
+            results[requirement] = {
+                "status": "probe_failed",
+                "node_type": spec["node_type"],
+                "error": str(exc),
+                "note": spec["note"],
+            }
+    return results
 
 
 def main() -> int:
@@ -75,7 +162,12 @@ def main() -> int:
         import omni.graph.core as og
 
         enabled = []
-        for name in ("isaacsim.ros2.bridge", "omni.isaac.ros2_bridge", "isaacsim.ros2.nodes"):
+        for name in (
+            "isaacsim.ros2.bridge",
+            "omni.isaac.ros2_bridge",
+            "isaacsim.sensors.physics",
+            "omni.isaac.sensor",
+        ):
             try:
                 extensions.enable_extension(name)
                 enabled.append(name)
@@ -104,16 +196,19 @@ def main() -> int:
                 "candidates": candidates,
                 "matched": available,
             }
+        attribute_results = _probe_required_attributes(og)
+        attributes_ok = all(result["status"] == "present" for result in attribute_results.values())
         payload = {
-            "ok": ok and bool(registered) and writer_ok,
+            "ok": ok and writer_ok and attributes_ok,
             "enabled_extensions": enabled,
             "registry_available": bool(registered),
             "rtx_lidar_pointcloud_writer_available": writer_ok,
             "rtx_lidar_pointcloud_writer_error": writer_error,
             "requirements": results,
+            "attribute_requirements": attribute_results,
             "note": "If registry_available=false, manually verify node type names in the installed Isaac version before implementing runner wiring.",
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         return 0 if payload["ok"] else 1
     finally:
         app.close()

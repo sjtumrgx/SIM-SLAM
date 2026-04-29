@@ -100,7 +100,21 @@ cd /path/to/RC2026_SIM
 python scripts/ros2/check_isaac_ros2_node_schema.py
 ```
 
-If this fails, pin the implementation to your installed Isaac Sim version before editing the runner. The repository README targets Isaac Sim 4.5 / 5.x, while online `latest` docs may describe newer node names.
+If this fails, pin the implementation to your installed Isaac Sim version before
+editing the runner. The checker validates both node types and the Isaac Sim 5.1
+IMU attribute chain used by the runner:
+
+```text
+IsaacImuSensor prim
+  -> isaacsim.sensors.physics.IsaacReadIMU
+  -> isaacsim.ros2.bridge.ROS2PublishImu
+```
+
+Do not wire `ROS2PublishImu.inputs:targetPrim` in Isaac Sim 5.1; that input is
+not present in the installed OGN schema. The publisher takes explicit
+`orientation`, `angularVelocity`, and `linearAcceleration` inputs instead.
+The repository README targets Isaac Sim 4.5 / 5.x, while online `latest` docs
+may describe newer node names.
 
 ## Stage 3: Start Isaac Runner
 
@@ -112,13 +126,22 @@ python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
   --scene assets/Map/robocon2026.usd \
   --robot assets/Go2W/go2w_ros2.usd \
   --scan-rate 10.0
+
+# Headless smoke test: create the scene/ActionGraph and stop after one step.
+python scripts/ros2/isaac_fast_lio2_go2w_scene.py --headless --max-steps 1
 ```
 
 The runner sets RTX LiDAR `scanRateBaseHz` from `--scan-rate`, creates an RTX
 LiDAR render product, and attaches the official `RtxLidarROS2PublishPointCloud`
-writer before publishing `/points_raw`. It also publishes the Isaac transform
-tree with `isaac:nameOverride` aliases for `base_link`, `imu_link`, and
-`lidar_link`; run the schema checker first because node names are
+writer before publishing `/points_raw`. The default Go2W IMU prim is
+`/World/Go2W/base/trunk/imu_link/Imu_Sensor`, and the articulation root used for
+joint states/control is `/World/Go2W/base`. Because `go2w_ros2.usd` already
+contains referenced `ROS_IMU` and `ROS_Joint_States` graphs, the runner disables
+those referenced graphs and creates one canonical runtime `/ActionGraph`; this
+prevents duplicate publishers/subscribers on `/imu`, `/joint_states`, and
+`/joint_command`. The runner also publishes the Isaac transform tree with
+`isaac:nameOverride` aliases for `base_link`, `imu_link`, and `lidar_link`; run
+the schema checker first because node names and attributes are
 installed-version dependent.
 
 Then check in the ROS shell:

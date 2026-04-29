@@ -428,6 +428,8 @@ PY
 )"
 
 # 可选但推荐：先检查当前 Isaac Sim 安装中 ROS2/RTX LiDAR 节点 schema
+# 该检查会确认 Isaac 5.1 风格的 IsaacReadIMU -> ROS2PublishImu 属性链路，
+# 避免把旧示例里的 PublishImu.inputs:targetPrim 写进 ActionGraph。
 python scripts/ros2/check_isaac_ros2_node_schema.py
 
 # 打开 Isaac Sim，加载 Robocon2026 场地 + Go2W，并创建 ROS2 Bridge/RTX LiDAR 发布器
@@ -435,9 +437,14 @@ python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
   --scene assets/Map/robocon2026.usd \
   --robot assets/Go2W/go2w_ros2.usd \
   --scan-rate 10.0
+
+# CI/远程调试时可只跑 1 步，验证 ActionGraph 能创建且不会立即 schema 报错：
+python scripts/ros2/isaac_fast_lio2_go2w_scene.py --headless --max-steps 1
 ```
 
 如果你已经在 Isaac shell 中 `source /opt/ros/humble/setup.zsh` 并能接受 Isaac/ROS 环境混用，也可以走外部 ROS 2 路径；否则使用上面的 Isaac 内置 Humble bridge 变量。`LD_LIBRARY_PATH` 必须在 `python ...` 启动前设置，不能等 `SimulationApp` 已经启动后再补。
+
+`assets/Go2W/go2w_ros2.usd` 本身已经带有 Go2W 的 ROS IMU / JointState ActionGraph，默认 IMU 传感器 prim 是 `/World/Go2W/base/trunk/imu_link/Imu_Sensor`，关节控制的 articulation root 是 `/World/Go2W/base`。为避免同一个 topic 有两套 publisher/subscriber，仓库 runner 会先禁用 USD 里引用进来的 `ROS_IMU` / `ROS_Joint_States` graph，再显式按 Isaac Sim 5.1 schema 创建一条运行时 `/ActionGraph`：用 `IsaacReadIMU` 读取 `IsaacImuSensor`，再把 `orientation` / `angularVelocity` / `linearAcceleration` 接到 `ROS2PublishImu`。因此不要再使用旧写法 `ROS2PublishImu.inputs:targetPrim`；在 Isaac Sim 5.1 里这个属性不存在，会报 `Attribute named 'inputs:targetPrim' does not refer to a legal og.Attribute`。
 
 然后在 ROS shell 中确认 Isaac Sim / ROS 2 Bridge 正在发布或订阅这些主题：
 

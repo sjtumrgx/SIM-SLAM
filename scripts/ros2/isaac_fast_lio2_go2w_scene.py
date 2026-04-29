@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -31,13 +33,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robot-prim", default="/World/Go2W", help="Robot prim path")
     parser.add_argument("--scene-prim", default="/World/Robocon2026Map", help="Scene prim path")
     parser.add_argument("--lidar-prim", default="/World/Go2W/base/lidar", help="RTX LiDAR prim path")
-    parser.add_argument("--imu-prim", default="/World/Go2W/imu", help="IMU prim path for ROS2PublishImu")
+    parser.add_argument(
+        "--imu-prim",
+        default="/World/Go2W/base/trunk/imu_link/Imu_Sensor",
+        help="IsaacImuSensor prim read by IsaacReadIMU before publishing /imu",
+    )
+    parser.add_argument(
+        "--articulation-prim",
+        default="/World/Go2W/base",
+        help="Go2W articulation root prim used by joint-state publishers and the articulation controller",
+    )
     parser.add_argument("--points-topic", default="points_raw", help="Raw RTX LiDAR PointCloud2 topic")
     parser.add_argument("--lidar-frame", default="lidar_link", help="LiDAR frame id")
     parser.add_argument("--base-frame", default="base_link", help="ROS TF frame name for the robot root")
     parser.add_argument("--imu-frame", default="imu_link", help="ROS TF frame name for the IMU prim")
     parser.add_argument("--tf-parent-prim", default="/World", help="Parent prim for Isaac ROS2PublishTransformTree")
     parser.add_argument("--scan-rate", type=float, default=10.0, help="Configured RTX LiDAR scan rate")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=0,
+        help="Stop after this many simulation steps; 0 means run until Isaac Sim exits",
+    )
     return parser.parse_args()
 
 
@@ -52,6 +69,25 @@ def _abs_usd(path: str) -> str:
     return str(candidate)
 
 
+@contextmanager
+def _runner_stage(name: str):
+    """Print coarse progress markers so Isaac shutdown logs show the failing step."""
+
+    print(f"[RUNNER] BEGIN {name}", flush=True)
+    try:
+        yield
+    except Ros2BridgeEnvironmentError:
+        # Let the top-level handler print the actionable bridge setup message
+        # without duplicating it with an internal traceback.
+        raise
+    except Exception as exc:
+        print(f"[RUNNER] ERROR {name}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        raise
+    else:
+        print(f"[RUNNER] END {name}", flush=True)
+
+
 def _enable_ros2_bridge(extensions) -> None:
     last_error = None
     for ext_name in ("isaacsim.ros2.bridge", "omni.isaac.ros2_bridge"):
@@ -61,6 +97,17 @@ def _enable_ros2_bridge(extensions) -> None:
         except Exception as exc:  # pragma: no cover - Isaac version dependent
             last_error = exc
     raise RuntimeError(f"Unable to enable Isaac ROS2 bridge extension: {last_error}")
+
+
+def _enable_physics_sensors(extensions) -> None:
+    last_error = None
+    for ext_name in ("isaacsim.sensors.physics", "omni.isaac.sensor"):
+        try:
+            extensions.enable_extension(ext_name)
+            return
+        except Exception as exc:  # pragma: no cover - Isaac version dependent
+            last_error = exc
+    raise RuntimeError(f"Unable to enable Isaac physics sensor extension: {last_error}")
 
 
 def _create_rtx_lidar(lidar_prim: str, scan_rate: float) -> str:
@@ -111,6 +158,94 @@ def _create_rtx_lidar(lidar_prim: str, scan_rate: float) -> str:
     return str(prim.GetPath())
 
 
+def _find_first_imu_sensor(stage, robot_prim: str) -> str | None:
+    robot_prefix = robot_prim.rstrip("/")
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        if prim_path != robot_prefix and not prim_path.startswith(robot_prefix + "/"):
+            continue
+        if prim.GetTypeName() == "IsaacImuSensor":
+            return prim_path
+    return None
+
+
+def _ensure_imu_sensor(stage, requested_imu_prim: str, robot_prim: str, articulation_prim: str) -> str:
+    """Return a valid IsaacImuSensor prim path, creating one only if needed.
+
+    Isaac Sim 5.1's ``ROS2PublishImu`` node no longer accepts a ``targetPrim``
+    input. The IMU sensor prim must instead be read by ``IsaacReadIMU`` and the
+    resulting orientation/velocity/acceleration values wired into
+    ``ROS2PublishImu``.
+    """
+    import omni.kit.commands
+
+    requested = stage.GetPrimAtPath(requested_imu_prim)
+    if requested.IsValid():
+        if requested.GetTypeName() != "IsaacImuSensor":
+            raise RuntimeError(
+                f"--imu-prim must point to an IsaacImuSensor prim; "
+                f"{requested_imu_prim} is {requested.GetTypeName()!r}."
+            )
+        return requested_imu_prim
+
+    discovered = _find_first_imu_sensor(stage, robot_prim)
+    if discovered:
+        print(
+            f"[INFO] Requested IMU prim {requested_imu_prim} was not found; "
+            f"using existing IsaacImuSensor {discovered}.",
+            flush=True,
+        )
+        return discovered
+
+    parent = stage.GetPrimAtPath(articulation_prim)
+    if not parent.IsValid():
+        raise RuntimeError(
+            f"Cannot create fallback IMU sensor: articulation prim {articulation_prim} does not exist."
+        )
+
+    success, prim = omni.kit.commands.execute(
+        "IsaacSensorCreateImuSensor",
+        path="/Imu_Sensor",
+        parent=articulation_prim,
+        sensor_period=0.0,
+        linear_acceleration_filter_size=1,
+        angular_velocity_filter_size=1,
+        orientation_filter_size=1,
+    )
+    if not success or prim is None:
+        raise RuntimeError(
+            "Could not create fallback Isaac IMU sensor. Verify the articulation "
+            f"prim {articulation_prim} is a rigid body/articulation root."
+        )
+    imu_prim = str(prim.GetPath())
+    print(f"[INFO] Created fallback IsaacImuSensor at {imu_prim}.", flush=True)
+    return imu_prim
+
+
+def _disable_referenced_ros_graphs(stage, robot_prim: str) -> list[str]:
+    """Disable ROS graphs embedded in go2w_ros2.usd to avoid duplicate topics.
+
+    The Go2W USD already contains ROS IMU and joint-state graphs. The runner
+    owns a canonical runtime graph so it can pin Isaac-version-specific schema
+    choices and frame names in one place.
+    """
+    graph_root = robot_prim.rstrip("/") + "/Graph"
+    disabled = []
+    for graph_name in ("ROS_IMU", "ROS_Joint_States"):
+        graph_path = f"{graph_root}/{graph_name}"
+        prim = stage.GetPrimAtPath(graph_path)
+        if prim.IsValid():
+            prim.SetActive(False)
+            disabled.append(graph_path)
+    if disabled:
+        print(
+            "[INFO] Disabled referenced Go2W ROS graphs and using runtime /ActionGraph: "
+            + ", ".join(disabled),
+            flush=True,
+        )
+    return disabled
+
+
 def _attach_rtx_lidar_pointcloud_writer(lidar_prim_path: str, topic_name: str, frame_id: str) -> object:
     """Attach the official Replicator RTX LiDAR ROS2 PointCloud2 writer.
 
@@ -140,7 +275,7 @@ def _set_name_override(stage, prim_path: str, frame_name: str) -> None:
     attr.Set(frame_name)
 
 
-def _build_action_graph(args) -> None:
+def _build_action_graph(args, imu_prim_path: str) -> None:
     import omni.graph.core as og
     import usdrt.Sdf
 
@@ -155,6 +290,7 @@ def _build_action_graph(args) -> None:
                 ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
                 ("PublishJointState", "isaacsim.ros2.bridge.ROS2PublishJointState"),
                 ("SubscribeJointState", "isaacsim.ros2.bridge.ROS2SubscribeJointState"),
+                ("ReadImu", "isaacsim.sensors.physics.IsaacReadIMU"),
                 ("PublishImu", "isaacsim.ros2.bridge.ROS2PublishImu"),
                 ("PublishTf", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
                 ("ArticulationController", "isaacsim.core.nodes.IsaacArticulationController"),
@@ -163,7 +299,7 @@ def _build_action_graph(args) -> None:
                 ("OnImpulseEvent.outputs:execOut", "PublishClock.inputs:execIn"),
                 ("OnImpulseEvent.outputs:execOut", "PublishJointState.inputs:execIn"),
                 ("OnImpulseEvent.outputs:execOut", "SubscribeJointState.inputs:execIn"),
-                ("OnImpulseEvent.outputs:execOut", "PublishImu.inputs:execIn"),
+                ("OnImpulseEvent.outputs:execOut", "ReadImu.inputs:execIn"),
                 ("OnImpulseEvent.outputs:execOut", "PublishTf.inputs:execIn"),
                 ("OnImpulseEvent.outputs:execOut", "ArticulationController.inputs:execIn"),
                 ("Context.outputs:context", "PublishClock.inputs:context"),
@@ -173,25 +309,34 @@ def _build_action_graph(args) -> None:
                 ("Context.outputs:context", "PublishTf.inputs:context"),
                 ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
                 ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
-                ("ReadSimTime.outputs:simulationTime", "PublishImu.inputs:timeStamp"),
                 ("ReadSimTime.outputs:simulationTime", "PublishTf.inputs:timeStamp"),
+                ("ReadImu.outputs:execOut", "PublishImu.inputs:execIn"),
+                ("ReadImu.outputs:sensorTime", "PublishImu.inputs:timeStamp"),
+                ("ReadImu.outputs:angVel", "PublishImu.inputs:angularVelocity"),
+                ("ReadImu.outputs:linAcc", "PublishImu.inputs:linearAcceleration"),
+                ("ReadImu.outputs:orientation", "PublishImu.inputs:orientation"),
                 ("SubscribeJointState.outputs:jointNames", "ArticulationController.inputs:jointNames"),
                 ("SubscribeJointState.outputs:positionCommand", "ArticulationController.inputs:positionCommand"),
                 ("SubscribeJointState.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
                 ("SubscribeJointState.outputs:effortCommand", "ArticulationController.inputs:effortCommand"),
             ],
             "set_values": [
-                ("ArticulationController.inputs:robotPath", args.robot_prim),
+                ("ArticulationController.inputs:robotPath", args.articulation_prim),
                 ("PublishJointState.inputs:topicName", "joint_states"),
                 ("SubscribeJointState.inputs:topicName", "joint_command"),
-                ("PublishJointState.inputs:targetPrim", [usdrt.Sdf.Path(args.robot_prim)]),
+                ("PublishJointState.inputs:targetPrim", [usdrt.Sdf.Path(args.articulation_prim)]),
+                ("ReadImu.inputs:imuPrim", [usdrt.Sdf.Path(imu_prim_path)]),
+                ("ReadImu.inputs:readGravity", False),
                 ("PublishImu.inputs:topicName", "imu"),
                 ("PublishImu.inputs:frameId", args.imu_frame),
-                ("PublishImu.inputs:targetPrim", usdrt.Sdf.Path(args.imu_prim)),
                 ("PublishTf.inputs:parentPrim", usdrt.Sdf.Path(args.tf_parent_prim)),
                 (
                     "PublishTf.inputs:targetPrims",
-                    [usdrt.Sdf.Path(args.robot_prim), usdrt.Sdf.Path(args.imu_prim), usdrt.Sdf.Path(args.lidar_prim)],
+                    [
+                        usdrt.Sdf.Path(args.articulation_prim),
+                        usdrt.Sdf.Path(imu_prim_path),
+                        usdrt.Sdf.Path(args.lidar_prim),
+                    ],
                 ),
             ],
         },
@@ -201,47 +346,83 @@ def _build_action_graph(args) -> None:
 def main() -> int:
     args = parse_args()
     if not args.skip_ros2_env_check:
-        ensure_ros2_bridge_environment(
-            "python scripts/ros2/isaac_fast_lio2_go2w_scene.py "
-            f"--scene {args.scene} --robot {args.robot} --scan-rate {args.scan_rate}"
-        )
-    from isaacsim import SimulationApp
+        with _runner_stage("ros2_bridge_environment_preflight"):
+            ensure_ros2_bridge_environment(
+                "python scripts/ros2/isaac_fast_lio2_go2w_scene.py "
+                f"--scene {args.scene} --robot {args.robot} --scan-rate {args.scan_rate}"
+            )
+    with _runner_stage("import_simulation_app"):
+        from isaacsim import SimulationApp
 
-    simulation_app = SimulationApp({"renderer": "RaytracedLighting", "headless": args.headless})
+    with _runner_stage("start_simulation_app"):
+        simulation_app = SimulationApp({"renderer": "RaytracedLighting", "headless": args.headless})
     try:
-        import omni.graph.core as og
-        import omni.usd
-        from isaacsim.core.api import SimulationContext
-        from isaacsim.core.utils import extensions, prims, rotations, stage
-        from pxr import Gf
+        with _runner_stage("import_isaac_modules"):
+            import omni.graph.core as og
+            import omni.usd
+            from isaacsim.core.api import SimulationContext
+            from isaacsim.core.utils import extensions, prims, rotations, stage
+            from pxr import Gf
 
-        _enable_ros2_bridge(extensions)
-        simulation_context = SimulationContext(stage_units_in_meters=1.0, physics_dt=1 / 120.0, rendering_dt=1 / 60.0)
-        stage.add_reference_to_stage(_abs_usd(args.scene), args.scene_prim)
-        prims.create_prim(
-            args.robot_prim,
-            "Xform",
-            position=np.array([0.0, -0.64, 0.35]),
-            orientation=rotations.gf_rotation_to_np_array(Gf.Rotation(Gf.Vec3d(0, 0, 1), 90)),
-            usd_path=_abs_usd(args.robot),
-        )
-        usd_stage = omni.usd.get_context().get_stage()
-        lidar_prim_path = _create_rtx_lidar(args.lidar_prim, args.scan_rate)
-        _set_name_override(usd_stage, args.robot_prim, args.base_frame)
-        _set_name_override(usd_stage, args.imu_prim, args.imu_frame)
-        _set_name_override(usd_stage, args.lidar_prim, args.lidar_frame)
-        rtx_lidar_handles = _attach_rtx_lidar_pointcloud_writer(lidar_prim_path, args.points_topic, args.lidar_frame)
-        print(f"[INFO] RTX LiDAR PointCloud2 writer attached: {rtx_lidar_handles}")
-        _build_action_graph(args)
-        simulation_context.initialize_physics()
-        simulation_context.play()
+        with _runner_stage("enable_ros2_bridge_extension"):
+            _enable_ros2_bridge(extensions)
+
+        with _runner_stage("enable_physics_sensor_extension"):
+            _enable_physics_sensors(extensions)
+
+        with _runner_stage("create_simulation_context"):
+            simulation_context = SimulationContext(stage_units_in_meters=1.0, physics_dt=1 / 120.0, rendering_dt=1 / 60.0)
+
+        with _runner_stage("load_scene_reference"):
+            stage.add_reference_to_stage(_abs_usd(args.scene), args.scene_prim)
+
+        with _runner_stage("load_robot_reference"):
+            prims.create_prim(
+                args.robot_prim,
+                "Xform",
+                position=np.array([0.0, -0.64, 0.35]),
+                orientation=rotations.gf_rotation_to_np_array(Gf.Rotation(Gf.Vec3d(0, 0, 1), 90)),
+                usd_path=_abs_usd(args.robot),
+            )
+
+        with _runner_stage("create_lidar_and_frame_aliases"):
+            usd_stage = omni.usd.get_context().get_stage()
+            _disable_referenced_ros_graphs(usd_stage, args.robot_prim)
+            lidar_prim_path = _create_rtx_lidar(args.lidar_prim, args.scan_rate)
+            imu_prim_path = _ensure_imu_sensor(usd_stage, args.imu_prim, args.robot_prim, args.articulation_prim)
+            _set_name_override(usd_stage, args.robot_prim, args.base_frame)
+            _set_name_override(usd_stage, args.articulation_prim, args.base_frame)
+            _set_name_override(usd_stage, imu_prim_path, args.imu_frame)
+            _set_name_override(usd_stage, args.lidar_prim, args.lidar_frame)
+
+        with _runner_stage("attach_rtx_lidar_pointcloud_writer"):
+            rtx_lidar_handles = _attach_rtx_lidar_pointcloud_writer(lidar_prim_path, args.points_topic, args.lidar_frame)
+            print(f"[INFO] RTX LiDAR PointCloud2 writer attached: {rtx_lidar_handles}", flush=True)
+
+        with _runner_stage("build_ros2_action_graph"):
+            _build_action_graph(args, imu_prim_path)
+
+        with _runner_stage("initialize_physics"):
+            simulation_context.initialize_physics()
+
+        with _runner_stage("play_simulation"):
+            simulation_context.play()
+
+        print("[RUNNER] ENTER simulation_loop", flush=True)
+        steps = 0
         while simulation_app.is_running():
             simulation_context.step(render=not args.headless)
             og.Controller.set(og.Controller.attribute("/ActionGraph/OnImpulseEvent.state:enableImpulse"), True)
-        simulation_context.stop()
+            steps += 1
+            if args.max_steps and steps >= args.max_steps:
+                break
+        print(f"[RUNNER] EXIT simulation_loop: steps={steps}", flush=True)
+        with _runner_stage("stop_simulation_context"):
+            simulation_context.stop()
         return 0
     finally:
-        simulation_app.close()
+        with _runner_stage("close_simulation_app"):
+            simulation_app.close()
 
 
 if __name__ == "__main__":
