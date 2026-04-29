@@ -25,6 +25,17 @@ Use separate shells as already recommended by the README.
 ```bash
 conda activate env_isaaclab
 # or use Isaac Lab's launcher, depending on your installation
+
+# For pip/conda Isaac Sim internal ROS 2 Humble bridge, set these before
+# starting any Python process that creates SimulationApp:
+export ROS_DISTRO=humble
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(python - <<'PY'
+from pathlib import Path
+import isaacsim
+print(Path(isaacsim.__file__).resolve().parent / "exts" / "isaacsim.ros2.bridge" / "humble" / "lib")
+PY
+)"
 ```
 
 ### ROS Shell
@@ -37,6 +48,12 @@ source install/setup.zsh 2>/dev/null || true
 ```
 
 Do not blindly mix the Isaac Conda Python environment with the system ROS 2 Python environment. The policy controllers need one Python 3.10 runtime that can import both apt ROS 2 Humble `rclpy` and `torch`; see the README's `2.1. 准备策略控制器 Python 运行时` section.
+
+If you prefer using an external ROS 2 environment for Isaac's bridge, source
+`/opt/ros/humble/setup.zsh` before launching Isaac instead. In either case,
+the ROS 2 Bridge native library environment must be ready before
+`SimulationApp` starts; setting `LD_LIBRARY_PATH` after Isaac has opened is too
+late for this failure mode.
 
 ## Stage 0: Livox Submodule and FAST-LIO Input Contract
 

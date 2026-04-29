@@ -417,6 +417,16 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 cd /path/to/SIM-SLAM
 conda activate env_isaaclab
 
+# Isaac Sim pip/conda 安装使用内置 ROS 2 Humble bridge 时，需要在启动 Python 前设置：
+export ROS_DISTRO=humble
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(python - <<'PY'
+from pathlib import Path
+import isaacsim
+print(Path(isaacsim.__file__).resolve().parent / "exts" / "isaacsim.ros2.bridge" / "humble" / "lib")
+PY
+)"
+
 # 可选但推荐：先检查当前 Isaac Sim 安装中 ROS2/RTX LiDAR 节点 schema
 python scripts/ros2/check_isaac_ros2_node_schema.py
 
@@ -426,6 +436,8 @@ python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
   --robot assets/Go2W/go2w_ros2.usd \
   --scan-rate 10.0
 ```
+
+如果你已经在 Isaac shell 中 `source /opt/ros/humble/setup.zsh` 并能接受 Isaac/ROS 环境混用，也可以走外部 ROS 2 路径；否则使用上面的 Isaac 内置 Humble bridge 变量。`LD_LIBRARY_PATH` 必须在 `python ...` 启动前设置，不能等 `SimulationApp` 已经启动后再补。
 
 然后在 ROS shell 中确认 Isaac Sim / ROS 2 Bridge 正在发布或订阅这些主题：
 

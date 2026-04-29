@@ -10,14 +10,22 @@ Run from an Isaac shell, not a plain ROS shell.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
+
+from ros2_bridge_env import Ros2BridgeEnvironmentError, ensure_ros2_bridge_environment
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headless", action="store_true", help="Run Isaac Sim headless")
+    parser.add_argument(
+        "--skip-ros2-env-check",
+        action="store_true",
+        help="Skip the early Isaac ROS 2 Bridge environment preflight",
+    )
     parser.add_argument("--scene", default="assets/Map/robocon2026.usd", help="USD scene path")
     parser.add_argument("--robot", default="assets/Go2W/go2w_ros2.usd", help="Go2W USD path")
     parser.add_argument("--robot-prim", default="/World/Go2W", help="Robot prim path")
@@ -192,6 +200,11 @@ def _build_action_graph(args) -> None:
 
 def main() -> int:
     args = parse_args()
+    if not args.skip_ros2_env_check:
+        ensure_ros2_bridge_environment(
+            "python scripts/ros2/isaac_fast_lio2_go2w_scene.py "
+            f"--scene {args.scene} --robot {args.robot} --scan-rate {args.scan_rate}"
+        )
     from isaacsim import SimulationApp
 
     simulation_app = SimulationApp({"renderer": "RaytracedLighting", "headless": args.headless})
@@ -232,4 +245,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Ros2BridgeEnvironmentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2)

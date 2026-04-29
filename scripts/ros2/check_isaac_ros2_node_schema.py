@@ -5,8 +5,11 @@ Run from the Isaac shell, e.g. `isaaclab.sh -p scripts/ros2/check_isaac_ros2_nod
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+
+from ros2_bridge_env import Ros2BridgeEnvironmentError, ensure_ros2_bridge_environment
 
 REQUIRED_NODE_TYPE_CANDIDATES = {
     "ros2_context": [
@@ -49,6 +52,16 @@ def _get_registered_node_types(og):
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--skip-ros2-env-check",
+        action="store_true",
+        help="Skip the early Isaac ROS 2 Bridge environment preflight",
+    )
+    args = parser.parse_args()
+    if not args.skip_ros2_env_check:
+        ensure_ros2_bridge_environment("python scripts/ros2/check_isaac_ros2_node_schema.py")
+
     try:
         from isaacsim import SimulationApp
     except Exception as exc:
@@ -107,4 +120,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Ros2BridgeEnvironmentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2)
