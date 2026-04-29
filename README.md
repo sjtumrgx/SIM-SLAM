@@ -345,6 +345,35 @@ colcon build --symlink-install --packages-select deploy_policy
 source install/setup.zsh
 ```
 
+### 2.1. 准备策略控制器 Python 运行时（`rclpy` + `torch`）
+
+`deploy_policy` 的策略控制器同时需要：
+
+- apt ROS 2 Humble 的 `rclpy`（Ubuntu 22.04 上对应 Python 3.10 C 扩展）；
+- PyTorch，用于加载 `policy.pt` TorchScript 策略。
+
+不要直接在 `env_isaaclab` 里启动这些 ROS 2 控制器；Python 3.11 的 Isaac/Conda 环境会加载不了 Humble 的 `rclpy` C 扩展。推荐为 ROS 侧单独建一个 Python 3.10 venv，并通过 `--system-site-packages` 复用 `/opt/ros/humble` 的 Python 包：
+
+```bash
+cd /path/to/SIM-SLAM/ros2_ws
+conda deactivate 2>/dev/null || true
+source /opt/ros/humble/setup.zsh
+
+python3.10 -m venv --system-site-packages .venv-ros2-policy
+source .venv-ros2-policy/bin/activate
+python -m pip install --upgrade pip
+
+# 按你的 CUDA/CPU 环境选择 PyTorch wheel；下面仅示例 CUDA 12.8。
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+source install/setup.zsh
+python - <<'PY'
+import rclpy, torch
+print("rclpy:", rclpy.__file__)
+print("torch:", torch.__version__)
+PY
+```
+
 ### 3. 启动策略控制器
 
 当前 `deploy_policy` 包中包含 Go2W、Go2、ArmDog 控制脚本与 launch 文件。常用入口：
@@ -352,15 +381,19 @@ source install/setup.zsh
 ```bash
 cd /path/to/SIM-SLAM/ros2_ws
 source /opt/ros/humble/setup.zsh
+source .venv-ros2-policy/bin/activate  # 如果按 2.1 创建了 ROS 策略运行时
 source install/setup.zsh
 
 # Go2W，默认加载 policy/go2w/rough/exported/policy.pt
-ros2 launch deploy_policy go2w_controller.launch.py use_sim_time:=true
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
 
 # 指定策略路径
 ros2 launch deploy_policy go2w_controller.launch.py \
   use_sim_time:=true \
-  policy_path:=/absolute/path/to/policy.pt
+  policy_path:=/absolute/path/to/policy.pt \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
 
 # 键盘控制 cmd_vel
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
@@ -725,6 +758,26 @@ cd /path/to/SIM-SLAM/ros2_ws
 rm -rf build install log
 colcon build --symlink-install
 ```
+
+### `ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`
+
+这通常不是仓库缺文件，而是 **Python ABI 不匹配**：你在 `env_isaaclab` 等 Conda Python 3.11 shell 里启动了 apt ROS 2 Humble 的 Python 节点，而 Humble 的 `rclpy` C 扩展是给 Ubuntu 22.04 的 Python 3.10 构建的。
+
+处理方式：
+
+```bash
+cd /path/to/SIM-SLAM/ros2_ws
+conda deactivate 2>/dev/null || true
+source /opt/ros/humble/setup.zsh
+source .venv-ros2-policy/bin/activate   # 见“2.1. 准备策略控制器 Python 运行时”
+source install/setup.zsh
+
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
+```
+
+`go2w_controller.launch.py`、`go2_controller.launch.py`、`armdog_controller.launch.py` 会在启动前检查 `python_executable` 是否能同时导入 `rclpy` 和 `torch`，避免再落到难读的底层 C 扩展错误。
 
 ### ROS 2 topic 互相看不到
 

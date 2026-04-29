@@ -1,7 +1,14 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from controller_launch_utils import (  # noqa: E402
+    declare_python_executable_argument,
+    python_node_with_preflight,
+)
 
 
 def generate_launch_description():
@@ -15,11 +22,13 @@ def generate_launch_description():
         DeclareLaunchArgument("derive_ring_if_missing", default_value="false"),
         DeclareLaunchArgument("scan_line", default_value="32"),
         DeclareLaunchArgument("frame_id", default_value="lidar_link"),
-        Node(
+        declare_python_executable_argument(),
+        python_node_with_preflight(
             package="deploy_policy",
             executable="isaac_pointcloud_time_adapter.py",
             name="isaac_pointcloud_time_adapter",
             output="screen",
+            required_modules=("rclpy",),
             parameters=[{
                 "input_topic": LaunchConfiguration("input_topic"),
                 "output_topic": LaunchConfiguration("output_topic"),

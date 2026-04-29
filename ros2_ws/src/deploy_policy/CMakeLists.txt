@@ -8,6 +8,9 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+endif()
 
 install(DIRECTORY
   config
@@ -33,5 +36,10 @@ install(FILES
   scripts/pointcloud_timing_core.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  ament_add_pytest_test(test_pointcloud_timing_core test/test_pointcloud_timing_core.py)
+  ament_add_pytest_test(test_controller_launch_utils test/test_controller_launch_utils.py)
+endif()
 
 ament_package()

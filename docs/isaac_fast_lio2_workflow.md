@@ -32,10 +32,11 @@ conda activate env_isaaclab
 ```bash
 source /opt/ros/humble/setup.zsh
 cd /path/to/RC2026_SIM/ros2_ws
+source .venv-ros2-policy/bin/activate 2>/dev/null || true
 source install/setup.zsh 2>/dev/null || true
 ```
 
-Do not blindly mix the Isaac Conda Python environment with the system ROS 2 Python environment.
+Do not blindly mix the Isaac Conda Python environment with the system ROS 2 Python environment. The policy controllers need one Python 3.10 runtime that can import both apt ROS 2 Humble `rclpy` and `torch`; see the README's `2.1. 准备策略控制器 Python 运行时` section.
 
 ## Stage 0: Livox Submodule and FAST-LIO Input Contract
 
@@ -164,7 +165,9 @@ Failure blocks FAST-LIO2 completion.
 ## Stage 6: Control Go2W
 
 ```bash
-ros2 launch deploy_policy go2w_controller.launch.py use_sim_time:=true
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
@@ -244,7 +247,8 @@ Use Go2W for v1. If switching to Go2, pass the existing flat policy explicitly:
 ```bash
 ros2 launch deploy_policy go2_controller.launch.py \
   use_sim_time:=true \
-  policy_path:=/path/to/RC2026_SIM/ros2_ws/src/deploy_policy/policy/go2/flat/exported/policy.pt
+  policy_path:=/path/to/RC2026_SIM/ros2_ws/src/deploy_policy/policy/go2/flat/exported/policy.pt \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
 ```
 
 ## Evidence Bundle
