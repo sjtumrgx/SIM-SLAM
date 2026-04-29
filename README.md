@@ -352,20 +352,28 @@ source install/setup.zsh
 - apt ROS 2 Humble 的 `rclpy`（Ubuntu 22.04 上对应 Python 3.10 C 扩展）；
 - PyTorch，用于加载 `policy.pt` TorchScript 策略。
 
-不要直接在 `env_isaaclab` 里启动这些 ROS 2 控制器；Python 3.11 的 Isaac/Conda 环境会加载不了 Humble 的 `rclpy` C 扩展。推荐为 ROS 侧单独建一个 Python 3.10 venv，并通过 `--system-site-packages` 复用 `/opt/ros/humble` 的 Python 包：
+不要直接在 `env_isaaclab` 里启动这些 ROS 2 控制器；Python 3.11 的 Isaac/Conda 环境会加载不了 Humble 的 `rclpy` C 扩展。推荐用 `uv` 为 ROS 侧单独建一个 Python 3.10 venv，并通过 `--system-site-packages` 复用 `/opt/ros/humble` 的 Python 包：
 
 ```bash
 cd /path/to/SIM-SLAM/ros2_ws
 conda deactivate 2>/dev/null || true
 source /opt/ros/humble/setup.zsh
 
-python3.10 -m venv --system-site-packages .venv-ros2-policy
+# 本机已验证 uv venv 支持 --system-site-packages；这里显式使用系统 Python 3.10，
+# 避免 uv 下载/选择与 apt ROS 2 Humble 不一致的 Python。
+uv --version
+/usr/bin/python3 - <<'PY'
+import sys
+assert sys.version_info[:2] == (3, 10), sys.version
+PY
+
+uv venv --python /usr/bin/python3 --system-site-packages .venv-ros2-policy
+
+# 按你的 CUDA/CPU 环境选择 PyTorch backend；下面仅示例 CUDA 12.8。
+# 常见可选值包括 cpu、cu128、cu126 等；用 `uv pip install --help` 查看本机 uv 支持项。
+uv pip install --python .venv-ros2-policy/bin/python --torch-backend cu128 torch
+
 source .venv-ros2-policy/bin/activate
-python -m pip install --upgrade pip
-
-# 按你的 CUDA/CPU 环境选择 PyTorch wheel；下面仅示例 CUDA 12.8。
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-
 source install/setup.zsh
 python - <<'PY'
 import rclpy, torch
@@ -373,6 +381,8 @@ print("rclpy:", rclpy.__file__)
 print("torch:", torch.__version__)
 PY
 ```
+
+如果你的 `uv` 版本不支持 `--torch-backend`，先升级 `uv`；临时兜底可使用同一个 `.venv-ros2-policy/bin/python` 执行 `python -m pip install torch --index-url <对应 PyTorch wheel 源>`，但仍需保持 Python 3.10 + `--system-site-packages`。
 
 ### 3. 启动策略控制器
 

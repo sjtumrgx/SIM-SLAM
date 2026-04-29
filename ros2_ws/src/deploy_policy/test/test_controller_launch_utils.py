@@ -33,4 +33,6 @@ def test_preflight_error_explains_rclpy_abi_mismatch():
     assert "ABI mismatch" in message
     assert "CPython 3.10" in message
     assert "Python 3.11" in message
+    assert "uv venv" in message
+    assert "--torch-backend cu128" in message
     assert "python_executable" in message

@@ -215,12 +215,12 @@ def format_preflight_error(probe: Mapping[str, object], failures: Mapping[str, M
         textwrap.dedent(
             """
             1. Do not launch deploy_policy from env_isaaclab.
-            2. Create/use a Python 3.10 ROS policy runtime with torch installed, for example:
+            2. Create/use a Python 3.10 ROS policy runtime with uv, for example:
                cd /path/to/RC2026_SIM/ros2_ws
-               python3.10 -m venv --system-site-packages .venv-ros2-policy
+               conda deactivate 2>/dev/null || true
                source /opt/ros/humble/setup.zsh
-               source .venv-ros2-policy/bin/activate
-               python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+               uv venv --python /usr/bin/python3 --system-site-packages .venv-ros2-policy
+               uv pip install --python .venv-ros2-policy/bin/python --torch-backend cu128 torch
                source install/setup.zsh
             3. Relaunch with:
                ros2 launch deploy_policy go2w_controller.launch.py use_sim_time:=true \\
