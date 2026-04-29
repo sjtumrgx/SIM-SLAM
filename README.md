@@ -38,7 +38,8 @@
    - 内置本地 `rsl_rl` 代码，方便与 Isaac Lab 任务配置配套使用。
 4. **ROS 2 策略部署与 SLAM**
    - `ros2_ws/src/deploy_policy`：读取 TorchScript 策略，订阅仿真状态，发布关节命令。
-   - `ros2_ws/src/FAST_LIO` 与 `ros2_ws/src/livox_ros_driver2`：作为子模块接入 FAST-LIO2 与 Livox 驱动。
+   - `ros2_ws/src/FAST_LIO`：仓库内 vendored 的 FAST-LIO2 ROS 2 fork 源码目录；ROS 包名仍叫 `fast_lio`。
+   - `ros2_ws/src/livox_ros_driver2`：作为子模块接入 Livox 驱动。
 
 项目中已有的主要任务包括：
 
@@ -80,9 +81,9 @@
 │       └── tasks/manager_based/        # Isaac Lab ManagerBasedRLEnv 任务
 └── ros2_ws/
     └── src/
-        ├── deploy_policy/              # ROS 2 策略部署包
-        ├── FAST_LIO/                   # FAST-LIO2 ROS 2 子模块
-        └── livox_ros_driver2/          # Livox ROS Driver 2 子模块
+        ├── deploy_policy/                  # ROS 2 策略部署包
+        ├── FAST_LIO/                       # vendored FAST-LIO2 ROS 2 fork；ROS 包名 fast_lio
+        └── livox_ros_driver2/              # Livox ROS Driver 2 子模块
 ```
 
 > 注意：`assets/` 通常超过 1GB，且包含 USD / PCD / HDR / 材质等二进制资产。建议通过网盘或 Git LFS/对象存储分发，不建议直接放入普通 Git 仓库。
@@ -409,16 +410,45 @@ ros2 launch deploy_policy go2w_controller.launch.py \
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
-仿真侧建议打开 `assets/Simulation/sim.usd`，确保 Isaac Sim / ROS 2 Bridge 正在发布这些主题：
+仿真侧推荐使用仓库脚本启动 Isaac Sim，而不是只手动打开某个 USD。只打开 `assets/Map/robocon2026.usd` 通常只是加载场地；要自动创建 ROS 2 Bridge、加载 Go2W、创建关节/IMU/LiDAR 发布订阅链路，使用：
+
+```bash
+# 终端 A：Isaac shell，不要和 ROS shell 混用
+cd /path/to/SIM-SLAM
+conda activate env_isaaclab
+
+# 可选但推荐：先检查当前 Isaac Sim 安装中 ROS2/RTX LiDAR 节点 schema
+python scripts/ros2/check_isaac_ros2_node_schema.py
+
+# 打开 Isaac Sim，加载 Robocon2026 场地 + Go2W，并创建 ROS2 Bridge/RTX LiDAR 发布器
+python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
+  --scene assets/Map/robocon2026.usd \
+  --robot assets/Go2W/go2w_ros2.usd \
+  --scan-rate 10.0
+```
+
+然后在 ROS shell 中确认 Isaac Sim / ROS 2 Bridge 正在发布或订阅这些主题：
 
 ```bash
 ros2 topic list
+ros2 topic echo /clock --once
 ros2 topic echo /joint_states --once
 ros2 topic echo /imu --once
-ros2 topic echo /cmd_vel --once
+ros2 topic echo /points_raw --once
+ros2 topic info /joint_command
 ```
 
-`deploy_policy` 控制器主要使用：
+Isaac 侧脚本主要提供：
+
+| Topic | 类型 | 方向（相对 Isaac） | 说明 |
+| --- | --- | --- | --- |
+| `/clock` | `rosgraph_msgs/msg/Clock` | 发布 | 仿真时间 |
+| `/joint_states` | `sensor_msgs/msg/JointState` | 发布 | Go2W 仿真关节状态 |
+| `/imu` | `sensor_msgs/msg/Imu` | 发布 | Go2W IMU |
+| `/points_raw` | `sensor_msgs/msg/PointCloud2` | 发布 | RTX LiDAR 原始点云，给后续 adapter 使用 |
+| `/joint_command` | `sensor_msgs/msg/JointState` | 订阅 | 来自策略控制器的关节命令 |
+
+`deploy_policy` Go2W 控制器主要使用：
 
 | Topic | 类型 | 方向 | 说明 |
 | --- | --- | --- | --- |
@@ -430,6 +460,17 @@ ros2 topic echo /cmd_vel --once
 ArmDog 控制器会根据 `dog_type` 参数使用带后缀的 topic，例如 `joint_command_<dog_type>`、`imu_<dog_type>`、`joint_states_<dog_type>`。
 
 ## FAST-LIO2 / Livox ROS Driver 2 安装教程
+
+### FAST-LIO 还是 FAST-LIO2？
+
+本仓库运行链路里说的 SLAM 是 **FAST-LIO2 路线**，但源码目录、ROS 包名和启动包名保留上游命名：
+
+- 源码目录：`ros2_ws/src/FAST_LIO`
+- ROS 包名：`fast_lio`
+- 常用启动包：`ros2 launch fast_lio ...`
+- 本仓库 Isaac 专用启动封装：`ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py`
+
+这容易让人误以为运行的是 FAST-LIO1。实际判断依据是：vendored `FAST_LIO` README 同时包含 `FAST-LIO 2.0` 更新说明，当前配置也按 FAST-LIO2/FAST-LIO ROS 2 fork 的直接点云 + ikd-Tree 流程使用；项目文档统一称 **FAST-LIO2 ROS 2 fork**。只是为了兼容上游 ROS 包命名，命令里仍然写 `fast_lio`。
 
 FAST-LIO2 建图需要 LiDAR 点云与 IMU 时间同步。真实 Livox 雷达一般需要 `Livox-SDK2` + `livox_ros_driver2`；Isaac 仿真点云则需要确保消息类型、时间戳字段与 FAST-LIO2 配置匹配。
 
