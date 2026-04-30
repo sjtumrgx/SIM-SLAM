@@ -99,7 +99,7 @@
 | Python | 3.10 或 3.11 | 取决于你安装的 Isaac Lab / Isaac Sim 版本；不要混用多个 Python 解释器 |
 | ROS 2 | Humble Hawksbill | Humble 官方 apt 包面向 Ubuntu 22.04 |
 | FAST-LIO2 | ROS 2 fork | 已 vendored 到 `ros2_ws/src/FAST_LIO`，保留 GPL-2.0 协议文件 |
-| Livox 驱动 | Livox ROS Driver 2 | Humble 下使用 `./build.sh humble` |
+| Livox 驱动 | Livox ROS Driver 2 | Humble 下在 `ros2_ws` 用 `colcon build --packages-select livox_ros_driver2 --symlink-install` |
 
 **建议原则：**
 
@@ -575,18 +575,17 @@ git clone https://github.com/Ericsii/livox_ros_driver2.git livox_ros_driver2
 
 ### 4. 构建 Livox ROS Driver 2
 
-Livox 官方推荐在 ROS 2 Humble 下执行 `./build.sh humble`：
+本仓库使用的 `Ericsii/livox_ros_driver2` fork 没有 `build.sh`，其 ROS 2 构建方式是在 workspace 根目录直接用 `colcon`：
 
 ```bash
-cd /path/to/SIM-SLAM/ros2_ws/src/livox_ros_driver2
-source /opt/ros/humble/setup.zsh
-./build.sh humble
-
-# build.sh 通常会在上级 workspace 生成 install；回到 ros2_ws 后 source
 cd /path/to/SIM-SLAM/ros2_ws
+source /opt/ros/humble/setup.zsh
+colcon build --symlink-install --packages-select livox_ros_driver2
 source install/setup.zsh
 ros2 pkg list | grep livox
 ```
+
+> 如果你克隆的是 Livox 官方仓库且仓库根目录存在 `build.sh`，也可以按官方脚本构建；但本项目子模块路径 `ros2_ws/src/livox_ros_driver2` 当前没有该脚本。
 
 常用 Livox 启动示例：
 
