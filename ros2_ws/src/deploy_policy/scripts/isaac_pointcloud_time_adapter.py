@@ -51,6 +51,7 @@ class IsaacPointCloudTimeAdapter(Node):
         self.declare_parameter("scan_rate_hz", 10.0)
         self.declare_parameter("derive_time_if_missing", False)
         self.declare_parameter("derive_ring_if_missing", False)
+        self.declare_parameter("derive_intensity_if_missing", False)
         self.declare_parameter("scan_line", 32)
         self.declare_parameter("span_tolerance_ratio", 0.20)
         self.declare_parameter("frame_id", "")
@@ -63,6 +64,7 @@ class IsaacPointCloudTimeAdapter(Node):
         self.scan_rate_hz = float(self.get_parameter("scan_rate_hz").value)
         self.derive_time_if_missing = _as_bool(self.get_parameter("derive_time_if_missing").value)
         self.derive_ring_if_missing = _as_bool(self.get_parameter("derive_ring_if_missing").value)
+        self.derive_intensity_if_missing = _as_bool(self.get_parameter("derive_intensity_if_missing").value)
         self.scan_line = int(self.get_parameter("scan_line").value)
         self.span_tolerance_ratio = float(self.get_parameter("span_tolerance_ratio").value)
         self.frame_id = str(self.get_parameter("frame_id").value or "")
@@ -73,7 +75,8 @@ class IsaacPointCloudTimeAdapter(Node):
             f"Adapting {self.input_topic} -> {self.output_topic}; "
             f"lidar_type={self.lidar_type}, timestamp_unit={self.timestamp_unit}, "
             f"derive_time_if_missing={self.derive_time_if_missing}, "
-            f"derive_ring_if_missing={self.derive_ring_if_missing}"
+            f"derive_ring_if_missing={self.derive_ring_if_missing}, "
+            f"derive_intensity_if_missing={self.derive_intensity_if_missing}"
         )
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
@@ -92,7 +95,12 @@ class IsaacPointCloudTimeAdapter(Node):
 
         has_time_field = find_timing_field(msg.fields, contract.accepted_field_names) is not None
         has_ring_field = any(field.name == "ring" for field in msg.fields)
-        if (has_time_field or not self.derive_time_if_missing) and (has_ring_field or not self.derive_ring_if_missing):
+        has_intensity_field = any(field.name == "intensity" for field in msg.fields)
+        if (
+            (has_time_field or not self.derive_time_if_missing)
+            and (has_ring_field or not self.derive_ring_if_missing)
+            and (has_intensity_field or not self.derive_intensity_if_missing)
+        ):
             self.get_logger().error(
                 "Input cloud is not FAST-LIO timing compatible; not publishing. "
                 f"errors={result.errors}"
@@ -101,6 +109,10 @@ class IsaacPointCloudTimeAdapter(Node):
 
         try:
             adapted = msg
+            if not has_intensity_field and self.derive_intensity_if_missing:
+                if self.lidar_type != 2:
+                    raise ValueError("derived intensity is only implemented for FAST-LIO lidar_type=2 (VELO16)")
+                adapted = self._append_derived_intensity(adapted)
             if not has_time_field and self.derive_time_if_missing:
                 if self.lidar_type != 2:
                     raise ValueError("derived timing is only implemented for FAST-LIO lidar_type=2 (VELO16)")
@@ -120,6 +132,37 @@ class IsaacPointCloudTimeAdapter(Node):
         if self.frame_id:
             adapted.header.frame_id = self.frame_id
         self.publisher.publish(adapted)
+
+    def _append_derived_intensity(self, msg: PointCloud2) -> PointCloud2:
+        point_count = int(msg.width) * int(msg.height)
+        old_step = int(msg.point_step)
+        new_step = old_step + 4
+        raw = bytes(msg.data)
+        packer = struct.Struct(">f" if msg.is_bigendian else "<f")
+        chunks = []
+        for index in range(point_count):
+            start = index * old_step
+            point = raw[start:start + old_step]
+            if len(point) != old_step:
+                break
+            chunks.append(point + packer.pack(0.0))
+        adapted = PointCloud2()
+        adapted.header = msg.header
+        adapted.height = 1
+        adapted.width = len(chunks)
+        adapted.fields = list(msg.fields)
+        field = PointField()
+        field.name = "intensity"
+        field.offset = old_step
+        field.datatype = PointField.FLOAT32
+        field.count = 1
+        adapted.fields.append(field)
+        adapted.is_bigendian = msg.is_bigendian
+        adapted.point_step = new_step
+        adapted.row_step = new_step * adapted.width
+        adapted.data = b"".join(chunks)
+        adapted.is_dense = msg.is_dense
+        return adapted
 
     def _append_derived_ring(self, msg: PointCloud2) -> PointCloud2:
         if self.scan_line <= 0:

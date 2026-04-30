@@ -39,6 +39,7 @@ install(FILES
 
 if(BUILD_TESTING)
   ament_add_pytest_test(test_pointcloud_timing_core test/test_pointcloud_timing_core.py)
+  ament_add_pytest_test(test_isaac_pointcloud_time_adapter test/test_isaac_pointcloud_time_adapter.py)
   ament_add_pytest_test(test_controller_launch_utils test/test_controller_launch_utils.py)
 endif()
 

@@ -15,11 +15,10 @@
 - [资源文件 assets 的放置方式](#资源文件-assets-的放置方式)
 - [常用任务与命令](#常用任务与命令)
 - [ROS 2 Humble 安装与 ros2_ws 构建](#ros-2-humble-安装与-ros2_ws-构建)
-- [FAST-LIO2 / Livox ROS Driver 2 安装教程](#fast-lio2--livox-ros-driver-2-安装教程)
-- [Isaac Sim → ROS 2 → FAST-LIO2 v1 流程](#isaac-sim--ros-2--fast-lio2-v1-流程)
-- [能否把 ROS 2 直接装进 Conda？](#能否把-ros-2-直接装进-conda)
-- [代理配置：7890 端口](#代理配置7890-端口)
-- [常见问题排查](#常见问题排查)
+- [FAST-LIO2 路线总览](#fast-lio2-路线总览)
+- [路线 A：IsaacSim + FAST-LIO2](#路线-aisaacsim--fast-lio2)
+- [路线 B：真机使用 FAST-LIO2](#路线-b真机使用-fast-lio2)
+- [常见问题排查](docs/troubleshooting.md)
 - [参考资料](#参考资料)
 
 ## 项目能做什么
@@ -115,8 +114,6 @@
 ### 1. 获取仓库和 Livox 子模块
 
 ```bash
-# 如需代理，请先见“代理配置：7890 端口”章节
-
 git clone --recursive https://github.com/sjtumrgx/SIM-SLAM.git
 cd SIM-SLAM
 
@@ -438,6 +435,11 @@ python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
   --robot assets/Go2W/go2w_ros2.usd \
   --scan-rate 10.0
 
+# 说明：Robocon2026 原始 USD 不自带灯光；该 runner 会在无灯光时自动补一个
+# /World/ViewerLight DomeLight，并把初始视角对准场地/机器人，避免 RaytracedLighting 黑屏。
+# 如需调试原始 USD，可加 --no-viewer-setup；也可用 --viewer-light-intensity、
+# --camera-eye、--camera-target 调整亮度和初始视角。
+
 # CI/远程调试时可只跑 1 步，验证 ActionGraph 能创建且不会立即 schema 报错：
 python scripts/ros2/isaac_fast_lio2_go2w_scene.py --headless --max-steps 1
 ```
@@ -478,7 +480,14 @@ Isaac 侧脚本主要提供：
 
 ArmDog 控制器会根据 `dog_type` 参数使用带后缀的 topic，例如 `joint_command_<dog_type>`、`imu_<dog_type>`、`joint_states_<dog_type>`。
 
-## FAST-LIO2 / Livox ROS Driver 2 安装教程
+## FAST-LIO2 路线总览
+
+本仓库把 FAST-LIO2 明确分成两条路线，避免把 IsaacSim 仿真链路和真实 Livox 硬件链路混在一起：
+
+| 路线 | 数据来源 | 是否需要 `livox_ros_driver2` | FAST-LIO2 输入 | 推荐启动 |
+| --- | --- | --- | --- | --- |
+| 路线 A：IsaacSim + FAST-LIO2 | Isaac RTX LiDAR `/points_raw` + Isaac IMU `/imu` | 不需要 | `/points_fast_lio`，由 adapter 从 `/points_raw` 生成 | `deploy_policy` 的 Isaac 专用 launch |
+| 路线 B：真机使用 FAST-LIO2 | 真实 Livox / MID-360 UDP 数据 | 需要 | `/livox/lidar` + `/livox/imu` | `livox_ros_driver2` + `fast_lio` 原生 launch |
 
 ### FAST-LIO 还是 FAST-LIO2？
 
@@ -486,51 +495,164 @@ ArmDog 控制器会根据 `dog_type` 参数使用带后缀的 topic，例如 `jo
 
 - 源码目录：`ros2_ws/src/FAST_LIO`
 - ROS 包名：`fast_lio`
-- 常用启动包：`ros2 launch fast_lio ...`
-- 本仓库 Isaac 专用启动封装：`ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py`
+- 通用启动包：`ros2 launch fast_lio mapping.launch.py ...`
+- IsaacSim 专用封装：`ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py`
 
-这容易让人误以为运行的是 FAST-LIO1。实际判断依据是：vendored `FAST_LIO` README 同时包含 `FAST-LIO 2.0` 更新说明，当前配置也按 FAST-LIO2/FAST-LIO ROS 2 fork 的直接点云 + ikd-Tree 流程使用；项目文档统一称 **FAST-LIO2 ROS 2 fork**。只是为了兼容上游 ROS 包命名，命令里仍然写 `fast_lio`。
+所以命令里看到 `fast_lio` 不代表 FAST-LIO1；当前文档统一称 **FAST-LIO2 ROS 2 fork**。
 
-FAST-LIO2 建图需要 LiDAR 点云与 IMU 时间同步。真实 Livox 雷达一般需要 `Livox-SDK2` + `livox_ros_driver2`；Isaac 仿真点云则需要确保消息类型、时间戳字段与 FAST-LIO2 配置匹配。
+### 公共构建步骤
 
-## Isaac Sim → ROS 2 → FAST-LIO2 v1 流程
-
-本仓库现在提供一条面向 v1 联调的 Go2W + Robocon2026 场景流程：
-
-- Isaac 侧入口：`scripts/ros2/isaac_fast_lio2_go2w_scene.py`
-- Isaac 节点 schema 检查：`scripts/ros2/check_isaac_ros2_node_schema.py`
-- ROS 点云适配/硬门禁：`ros2_ws/src/deploy_policy/scripts/isaac_pointcloud_time_adapter.py` 与 `check_pointcloud_timing.py`
-- FAST-LIO2 配置/启动：`ros2_ws/src/deploy_policy/config/fast_lio/isaac_go2w.yaml` 与 `fast_lio_isaac_go2w.launch.py`
-- 完整 runbook：[`docs/isaac_fast_lio2_workflow.md`](docs/isaac_fast_lio2_workflow.md)
-- FAST-LIO2 PointCloud2 字段契约：[`docs/fast_lio2_input_contract.md`](docs/fast_lio2_input_contract.md)
-
-关键约束：`/points_fast_lio` 必须包含 FAST-LIO2 可读取的逐点 `time`/`t` 字段，且 `timestamp_unit` 与字段单位一致。只看到 `/points_raw` 或 FAST-LIO2 进程启动不算完成。
-
-### 0. 总体构建顺序
-
-推荐顺序如下：
-
-1. 安装 ROS 2 Humble。
-2. 安装 PCL / Eigen / Ceres 等依赖。
-3. 安装 Livox-SDK2。
-4. 构建 livox_ros_driver2。
-5. 构建 FAST-LIO2 ROS 2 fork。
-6. 修改 FAST-LIO2 config 中的 `lid_topic`、`imu_topic`、外参、时间同步参数。
-7. 启动驱动 / 播包 / 仿真，再启动 `fast_lio`。
-
-### 1. 安装基础依赖
+两条路线都需要先构建 ROS 2 工作空间中的 FAST-LIO2；IsaacSim 路线还需要 `deploy_policy` 的点云 adapter，真机路线还需要 Livox SDK / driver。
 
 ```bash
+cd /path/to/SIM-SLAM/ros2_ws
+source /opt/ros/humble/setup.zsh
+
 sudo apt update
 sudo apt install -y \
   build-essential cmake git \
   libeigen3-dev libpcl-dev libceres-dev \
   libyaml-cpp-dev libboost-all-dev
+
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --packages-select fast_lio deploy_policy
+source install/setup.zsh
 ```
 
-FAST-LIO2 ROS 2 fork 的 README 说明：Ubuntu >= 20.04、ROS >= Foxy，推荐 Humble；默认 apt 的 PCL 与 Eigen 通常足够使用。
+如果 `fast_lio` 找不到，先检查：
 
-### 2. 安装 Livox-SDK2
+```bash
+colcon list | grep -i lio
+find src/FAST_LIO -maxdepth 2 -name package.xml -print
+```
+
+## 路线 A：IsaacSim + FAST-LIO2
+
+适用场景：只用 IsaacSim / Isaac Lab 仿真点云建图，不接真实 MID-360。**这条路线不要启动 `livox_ros_driver2`**。
+
+### A1. 启动 IsaacSim 场景和 ROS 2 Bridge
+
+终端 A 使用 Isaac / Conda 环境，不要和 ROS shell 混用：
+
+```bash
+cd /path/to/SIM-SLAM
+conda activate env_isaaclab
+
+# Isaac Sim pip/conda 安装使用内置 ROS 2 Humble bridge 时，需要在启动 Python 前设置：
+export ROS_DISTRO=humble
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(python - <<'PY'
+from pathlib import Path
+import isaacsim
+print(Path(isaacsim.__file__).resolve().parent / "exts" / "isaacsim.ros2.bridge" / "humble" / "lib")
+PY
+)"
+
+# 可选但推荐：检查当前 Isaac Sim 安装中的 ROS2/RTX LiDAR node schema。
+python scripts/ros2/check_isaac_ros2_node_schema.py
+
+# 加载 Robocon2026 场地 + Go2W，并创建 /clock、/imu、/joint_states、/points_raw 等 ROS topic。
+python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
+  --scene assets/Map/robocon2026.usd \
+  --robot assets/Go2W/go2w_ros2.usd \
+  --scan-rate 10.0
+```
+
+说明：仓库 runner 会禁用 `go2w_ros2.usd` 中引用进来的重复 ROS graph，重新创建 Isaac Sim 5.1 风格的运行时 `/ActionGraph`，并为 RTX LiDAR 创建 render product。RTX LiDAR 依赖 render pipeline，headless smoke test 也会使用 render step：
+
+```bash
+python scripts/ros2/isaac_fast_lio2_go2w_scene.py --headless --max-steps 1
+```
+
+### A2. 验证 Isaac 原始点云不是空云
+
+终端 B 使用 ROS 2 Humble shell：
+
+```bash
+cd /path/to/SIM-SLAM/ros2_ws
+source /opt/ros/humble/setup.zsh
+source install/setup.zsh
+
+ros2 topic list
+ros2 topic echo /clock --once
+ros2 topic echo /imu --once
+ros2 topic echo /points_raw --once
+```
+
+`/points_raw` 应该是 `sensor_msgs/msg/PointCloud2`，并且 `width > 0`、`data` 非空。只有 topic 名存在但 `width: 0` 时，FAST-LIO2 仍然不会有点云输出。
+
+Isaac 侧主要 topic：
+
+| Topic | 类型 | 方向（相对 Isaac） | 说明 |
+| --- | --- | --- | --- |
+| `/clock` | `rosgraph_msgs/msg/Clock` | 发布 | 仿真时间 |
+| `/joint_states` | `sensor_msgs/msg/JointState` | 发布 | Go2W 仿真关节状态 |
+| `/imu` | `sensor_msgs/msg/Imu` | 发布 | Go2W IMU |
+| `/points_raw` | `sensor_msgs/msg/PointCloud2` | 发布 | RTX LiDAR 原始点云，给 adapter 使用 |
+| `/joint_command` | `sensor_msgs/msg/JointState` | 订阅 | 来自策略控制器的关节命令 |
+
+### A3. 启动 Isaac 点云 adapter
+
+FAST-LIO2 不能直接消费本仓库当前 Isaac 原始 `x/y/z` 点云；应先转成 `/points_fast_lio`，补齐 Velodyne-style `intensity`、逐点 `time` 和 `ring` 字段：
+
+```bash
+ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
+  input_topic:=/points_raw \
+  output_topic:=/points_fast_lio \
+  timestamp_unit:=0 \
+  lidar_type:=2 \
+  scan_rate_hz:=10.0 \
+  derive_time_if_missing:=true \
+  derive_ring_if_missing:=true \
+  derive_intensity_if_missing:=true \
+  scan_line:=32 \
+  frame_id:=lidar_link
+```
+
+验证字段契约：
+
+```bash
+ros2 topic echo /points_fast_lio --once
+ros2 run deploy_policy check_pointcloud_timing.py \
+  --topic /points_fast_lio \
+  --clock-topic /clock \
+  --scan-rate 10.0 \
+  --timestamp-unit 0 \
+  --lidar-type 2 \
+  --max-clock-skew-sec 0.1
+```
+
+完整字段契约见 [`docs/fast_lio2_input_contract.md`](docs/fast_lio2_input_contract.md)。
+
+### A4. 启动 Isaac 专用 FAST-LIO2
+
+```bash
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
+```
+
+该 launch 默认使用：
+
+- FAST-LIO2 config：`ros2_ws/src/deploy_policy/config/fast_lio/isaac_go2w.yaml`
+- 输入点云：`/points_fast_lio`
+- 输入 IMU：`/imu`
+- 仿真时间：`use_sim_time:=true`
+- RViz 配置：`ros2_ws/src/deploy_policy/rviz/fast_lio_isaac_go2w.rviz`
+
+常用观察命令：
+
+```bash
+ros2 topic hz /points_raw
+ros2 topic hz /points_fast_lio
+ros2 topic list | grep -E 'cloud|path|odom|map|lio'
+```
+
+完整 IsaacSim runbook 见 [`docs/isaac_fast_lio2_workflow.md`](docs/isaac_fast_lio2_workflow.md)。
+
+## 路线 B：真机使用 FAST-LIO2
+
+适用场景：使用真实 Livox / MID-360 硬件建图。**这条路线不需要 IsaacSim runner，也不要依赖 `/points_raw` adapter**。
+
+### B1. 安装 Livox-SDK2
 
 ```bash
 cd ~/Downloads
@@ -543,337 +665,105 @@ sudo make install
 sudo ldconfig
 ```
 
-默认会安装库到 `/usr/local/lib`、头文件到 `/usr/local/include`。
+### B2. 初始化并构建 Livox ROS Driver 2
 
-### 3. 初始化本仓库 Livox 子模块
-
-FAST_LIO 已经作为普通源码目录 vendored 到 `ros2_ws/src/FAST_LIO`，不再需要单独拉取 FAST_LIO 子模块。仍需初始化 Livox 驱动子模块：
+`FAST_LIO` 已随主仓库 vendored；Livox driver 作为子模块接入：
 
 ```bash
 cd /path/to/SIM-SLAM
 git submodule update --init --recursive
 
-# 检查目录不为空
-ls ros2_ws/src/FAST_LIO
-ls ros2_ws/src/livox_ros_driver2
-```
-
-本仓库 `.gitmodules` 中只保留 Livox ROS Driver 2：
-
-```text
-ros2_ws/src/livox_ros_driver2 -> https://github.com/Ericsii/livox_ros_driver2.git
-```
-
-如果你的网络环境无法拉取 Livox 子模块，可以手动克隆：
-
-```bash
-cd /path/to/SIM-SLAM/ros2_ws/src
-rm -rf livox_ros_driver2
-
-git clone https://github.com/Ericsii/livox_ros_driver2.git livox_ros_driver2
-```
-
-### 4. 构建 Livox ROS Driver 2
-
-本仓库使用的 `Ericsii/livox_ros_driver2` fork 没有 `build.sh`，其 ROS 2 构建方式是在 workspace 根目录直接用 `colcon`：
-
-```bash
-cd /path/to/SIM-SLAM/ros2_ws
+cd ros2_ws
 source /opt/ros/humble/setup.zsh
 colcon build --symlink-install --packages-select livox_ros_driver2
 source install/setup.zsh
 ros2 pkg list | grep livox
 ```
 
-> 如果你克隆的是 Livox 官方仓库且仓库根目录存在 `build.sh`，也可以按官方脚本构建；但本项目子模块路径 `ros2_ws/src/livox_ros_driver2` 当前没有该脚本。
-
-常用 Livox 启动示例：
+如果网络无法拉取子模块，可手动克隆：
 
 ```bash
-# MID-360，自定义 Livox CustomMsg，适合 FAST-LIO2 需要逐点时间戳的场景
-ros2 launch livox_ros_driver2 msg_MID360_launch.py
-
-# RViz 观察 PointCloud2
-ros2 launch livox_ros_driver2 rviz_MID360_launch.py
+cd /path/to/SIM-SLAM/ros2_ws/src
+rm -rf livox_ros_driver2
+git clone https://github.com/Ericsii/livox_ros_driver2.git livox_ros_driver2
 ```
 
-> FAST-LIO2 对运动畸变校正依赖每个点的时间戳。Livox 场景优先使用发布 `livox_ros_driver2/CustomMsg` 的 `msg_*` launch，而不是只发布普通 `PointCloud2` 的 launch。
+### B3. 配置 MID-360 网络
 
-### 5. 构建 FAST-LIO2
+检查本机连接雷达的网卡 IP：
 
 ```bash
-cd /path/to/SIM-SLAM/ros2_ws
-source /opt/ros/humble/setup.zsh
-source install/setup.zsh 2>/dev/null || true   # 如果已构建 livox_ros_driver2，先 source
-
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install --packages-select fast_lio
-source install/setup.zsh
+ip -br addr
 ```
 
-如果 `--packages-select fast_lio` 找不到包，先检查：
+然后检查 `ros2_ws/src/livox_ros_driver2/config/MID360_config.json` 中 `host_net_info` 的 IP 是否等于本机对应网卡 IP。若 driver 日志出现 `bind failed`，通常就是配置 IP 不在本机网卡上，或端口被占用。
 
-```bash
-colcon list | grep -i lio
-find src/FAST_LIO -maxdepth 2 -name package.xml -print
-```
-
-### 6. 配置并运行 FAST-LIO2
-
-FAST-LIO2 ROS 2 fork 的通用启动方式：
+### B4. 启动 Livox driver
 
 ```bash
 cd /path/to/SIM-SLAM/ros2_ws
 source /opt/ros/humble/setup.zsh
 source install/setup.zsh
 
-ros2 launch fast_lio mapping.launch.py config_file:=VLS.yaml
-```
-
-若使用 Livox MID-360，可先启动驱动：
-
-```bash
+# MID-360：发布 Livox CustomMsg，适合 FAST-LIO2 逐点时间戳需求。
 ros2 launch livox_ros_driver2 msg_MID360_launch.py
 ```
 
-若使用 Isaac Sim 仿真点云，请重点检查 `FAST_LIO/config/*.yaml` 中这些项：
-
-| 参数 | 建议检查内容 |
-| --- | --- |
-| `lid_topic` | 是否等于 Isaac / Livox 发布的点云 topic |
-| `imu_topic` | 是否等于仿真或真实 IMU topic |
-| `extrinsic_T` / `extrinsic_R` | LiDAR 在 IMU 坐标系下的位置与旋转；外参已知时建议关闭在线估计 |
-| `time_sync_en` | 只有在没有硬件同步且可接受软件同步误差时才开启 |
-| `pcd_save_enable` | 需要保存全局点云时设为 `1` |
-| `scan_line` / `timestamp_unit` | Velodyne / Ouster / 自定义 PointCloud2 需要按雷达实际字段设置 |
-
-常见运行顺序：
+另开终端检查：
 
 ```bash
-# 终端 A：启动 Isaac Sim 场景或真实 Livox driver
-ros2 topic list
+ros2 topic list | grep livox
+ros2 topic hz /livox/lidar
+ros2 topic echo /livox/imu --once
+```
 
-# 终端 B：启动 FAST-LIO2
+### B5. 启动真机 FAST-LIO2
+
+MID-360 推荐使用仓库内 `mid360.yaml`，不要沿用 IsaacSim 的 `/points_fast_lio` 配置，也不要用不匹配的 `VLS.yaml`：
+
+```bash
+cd /path/to/SIM-SLAM/ros2_ws
 source /opt/ros/humble/setup.zsh
-source /path/to/SIM-SLAM/ros2_ws/install/setup.zsh
-ros2 launch fast_lio mapping.launch.py config_file:=VLS.yaml
+source install/setup.zsh
 
-# 终端 C：观察输出
+ros2 launch fast_lio mapping.launch.py \
+  config_file:=mid360.yaml \
+  use_sim_time:=false \
+  rviz:=true
+```
+
+`mid360.yaml` 的关键默认项：
+
+| 参数 | 典型值 | 说明 |
+| --- | --- | --- |
+| `common.lid_topic` | `/livox/lidar` | 来自 `livox_ros_driver2 msg_MID360_launch.py` |
+| `common.imu_topic` | `/livox/imu` | 来自真实 Livox IMU |
+| `preprocess.lidar_type` | `1` | Livox CustomMsg 路线 |
+| `preprocess.timestamp_unit` | `3` | 纳秒单位，需与驱动消息一致 |
+| `use_sim_time` | `false` | 真机不用 Isaac `/clock` |
+
+常用检查顺序：
+
+```bash
+ros2 topic list | grep -E 'livox|cloud|path|odom|map'
+ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
 rviz2
-ros2 topic list | grep -E 'lio|cloud|path|odom|map'
 ```
+
+### B6. FAST-LIO2 调参经验
+
+- **先保证时间戳正确，再调外参。** 如果出现 `Failed to find match for field 'time'`，通常说明点云字段或 lidar_type 配置不匹配。
+- **Livox 优先使用 CustomMsg。** 普通 `PointCloud2` 可能缺少足够的逐点时间信息。
+- **外参已知时不要在线估计。** 将 `extrinsic_est_en` 设为 `false`，减少初始化不稳定。
+- **真机不用 `/clock`。** 启动 FAST-LIO2 时显式 `use_sim_time:=false`。
+- **网络先于 SLAM 排查。** `bind failed`、无 `/livox/lidar`、topic hz 为 0 时，先查 IP、网卡、防火墙和端口占用。
 
 ![slam view 1](./README.assets/image-20251125132947954.png)
 
 ![slam view 2](./README.assets/image-20251125133427548.png)
 
-### 7. FAST-LIO2 调参经验
-
-- **先保证时间戳正确，再调外参。** 如果出现 `Failed to find match for field 'time'`，通常说明点云消息缺少 FAST-LIO2 需要的逐点时间字段。
-- **Livox 优先使用 CustomMsg。** 普通 `PointCloud2` 可能没有足够的逐点时间信息，运动时地图会糊。
-- **外参已知时不要在线估计。** 将 `extrinsic_est_en` 设为 false/0，减少初始化不稳定。
-- **仿真里也要检查 frame。** `lidar`、`imu`、`base_link`、`map` 的 tf 命名和 FAST-LIO 配置必须一致。
-- **PCD 保存只在需要时开启。** 长时间运行会生成大文件。
-- **真实雷达注意网络。** Livox 雷达需要正确 IP、网卡、组播/防火墙配置。
-
-## 能否把 ROS 2 直接装进 Conda？
-
-简短回答：**可以通过 RoboStack 等社区方案把 ROS 2 装进 Conda，但本项目更推荐 ROS 2 Humble 使用系统 apt 安装到 `/opt/ros/humble`，并把 Isaac Lab 的 Conda 环境与 ROS shell 分开。**
-
-### 为什么不推荐把 apt ROS 2 和 Conda 混在一起？
-
-ROS 2 官方文档明确指出：在 Linux 上混用 apt 安装的 ROS 2 与 Conda 安装的 Python 包通常会冲突，尤其是 `PATH`、`PYTHONPATH`、C 扩展 ABI、Qt / OpenCV / PCL / DDS 等库。典型现象包括：
-
-- `import rclpy` 找到错误 Python 版本的 `.so`；
-- `colcon build` 找到 Conda 的 CMake / Python / NumPy，导致编译失败；
-- RViz / Qt / OpenCV 动态库冲突；
-- Isaac Lab 的 PyTorch / CUDA 栈与 ROS Python 栈互相污染。
-
-### 推荐方案对比
-
-| 方案 | 是否影响系统环境 | 推荐程度 | 适用场景 |
-| --- | --- | --- | --- |
-| apt 安装 ROS 2 到 `/opt/ros/humble` | 会添加 apt source 与系统包，但 ROS 文件集中在 `/opt/ros/humble` | ⭐⭐⭐⭐⭐ | 本项目推荐；与 FAST-LIO2 / Livox / PCL / Eigen 兼容性最好 |
-| Docker / Dev Container | 基本不影响宿主系统 | ⭐⭐⭐⭐ | 需要强隔离、CI、多人统一环境；GUI/USB/GPU 配置更复杂 |
-| RoboStack / Conda ROS 2 | Conda 环境内隔离，不改系统 ROS | ⭐⭐⭐ | 纯 ROS 学习、无 sudo、macOS/Windows/多版本测试 |
-| 在 Isaac Conda 里再装 ROS 2 | 理论可试，实践不推荐 | ⭐ | 容易污染 Isaac Lab、PyTorch、CUDA、PCL、Qt 依赖 |
-
-### 如果必须使用 Conda ROS 2
-
-可以参考 RoboStack：
-
-```bash
-# 不要装到 base，也不要和 env_isaaclab 混用
-conda create -n ros_humble -c conda-forge -c robostack-humble ros-humble-desktop
-conda activate ros_humble
-conda config --env --add channels robostack-humble
-
-# 不要再 source /opt/ros/humble/setup.zsh
-rviz2
-```
-
-但对本项目的建议是：
-
-- `env_isaaclab` 只运行 Isaac Lab 训练/仿真脚本。
-- `/opt/ros/humble` shell 只运行 `ros2_ws`、`deploy_policy`、FAST-LIO2。
-- 不要把 `source /opt/ros/humble/setup.*` 写进会自动影响所有终端的全局配置；可以写一个显式脚本：
-
-```bash
-# scripts/source_ros2_humble.zsh，自行创建
-source /opt/ros/humble/setup.zsh
-source /path/to/SIM-SLAM/ros2_ws/install/setup.zsh
-```
-
-这样不会在打开 Conda/Isaac 终端时自动污染环境。
-
-## 代理配置：7890 端口
-
-如果你使用本机代理端口 `7890`，常用配置如下。
-
-### 临时代理
-
-```bash
-export http_proxy=http://127.0.0.1:7890
-export https_proxy=http://127.0.0.1:7890
-export HTTP_PROXY=http://127.0.0.1:7890
-export HTTPS_PROXY=http://127.0.0.1:7890
-export all_proxy=socks5://127.0.0.1:7890
-export ALL_PROXY=socks5://127.0.0.1:7890
-```
-
-### Git 代理
-
-```bash
-git config --global http.proxy http://127.0.0.1:7890
-git config --global https.proxy http://127.0.0.1:7890
-
-# 取消代理
-# git config --global --unset http.proxy
-# git config --global --unset https.proxy
-```
-
-### apt 代理（可选）
-
-只在确实需要时使用：
-
-```bash
-sudo tee /etc/apt/apt.conf.d/99proxy >/dev/null <<'APT_PROXY'
-Acquire::http::Proxy "http://127.0.0.1:7890";
-Acquire::https::Proxy "http://127.0.0.1:7890";
-APT_PROXY
-
-# 取消：sudo rm /etc/apt/apt.conf.d/99proxy
-```
-
-## 常见问题排查
-
-### `ModuleNotFoundError: No module named 'isaaclab'`
-
-说明当前 Python 不是 Isaac Lab 环境：
-
-```bash
-which python
-python -c "import isaaclab; print(isaaclab.__file__)"
-```
-
-解决：激活 `env_isaaclab`，或使用 Isaac Lab 的 `./isaaclab.sh -p` 运行脚本。
-
-### `ModuleNotFoundError: No module named 'Robocon2026'`
-
-没有安装本仓库扩展：
-
-```bash
-cd /path/to/SIM-SLAM
-python -m pip install -e source/Robocon2026
-```
-
-### 任务列表为空或找不到 `Template-*`
-
-检查：
-
-```bash
-python scripts/list_envs.py
-python -c "import Robocon2026, gymnasium as gym; print(Robocon2026.__file__)"
-```
-
-如果你改了任务命名，需要同步修改 `scripts/list_envs.py` 的过滤条件。
-
-### 资产缺失 / 场景黑屏 / USD 无法打开
-
-确认在仓库根目录运行，并且 `assets/` 已解压：
-
-```bash
-pwd
-find assets -maxdepth 2 -type f | head
-```
-
-### ROS 2 `ros2: command not found`
-
-当前 shell 没有 source：
-
-```bash
-source /opt/ros/humble/setup.zsh
-ros2 --help
-```
-
-### `colcon build` 找到 Conda Python 导致失败
-
-退出 Conda 后重新构建：
-
-```bash
-conda deactivate 2>/dev/null || true
-source /opt/ros/humble/setup.zsh
-cd /path/to/SIM-SLAM/ros2_ws
-rm -rf build install log
-colcon build --symlink-install
-```
-
-### `ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`
-
-这通常不是仓库缺文件，而是 **Python ABI 不匹配**：你在 `env_isaaclab` 等 Conda Python 3.11 shell 里启动了 apt ROS 2 Humble 的 Python 节点，而 Humble 的 `rclpy` C 扩展是给 Ubuntu 22.04 的 Python 3.10 构建的。
-
-处理方式：
-
-```bash
-cd /path/to/SIM-SLAM/ros2_ws
-conda deactivate 2>/dev/null || true
-source /opt/ros/humble/setup.zsh
-source .venv-ros2-policy/bin/activate   # 见“2.1. 准备策略控制器 Python 运行时”
-source install/setup.zsh
-
-ros2 launch deploy_policy go2w_controller.launch.py \
-  use_sim_time:=true \
-  python_executable:=$PWD/.venv-ros2-policy/bin/python3
-```
-
-`go2w_controller.launch.py`、`go2_controller.launch.py`、`armdog_controller.launch.py` 会在启动前检查 `python_executable` 是否能同时导入 `rclpy` 和 `torch`，避免再落到难读的底层 C 扩展错误。
-
-### ROS 2 topic 互相看不到
-
-检查 DDS 域和组播：
-
-```bash
-echo $ROS_DOMAIN_ID
-ros2 multicast receive
-# 另开终端：ros2 multicast send
-```
-
-多机或多队伍同网段时，建议设置不同 `ROS_DOMAIN_ID`。
-
-### FAST-LIO2 报 `Failed to find match for field 'time'`
-
-通常是点云缺少逐点时间戳。Livox 请使用发布 `livox_ros_driver2/CustomMsg` 的 `msg_*` launch；自定义仿真点云请确认字段和 FAST-LIO2 配置匹配。
-
-### 地图漂移或快速发散
-
-按优先级检查：
-
-1. LiDAR / IMU 时间同步；
-2. `lid_topic` / `imu_topic` 是否正确；
-3. LiDAR-IMU 外参；
-4. IMU 方向和重力方向；
-5. 点云时间单位与 `timestamp_unit`；
-6. 仿真频率和 ROS 2 `/clock` 是否稳定。
+常见故障的详细排查见 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
 
 ## 代码格式与提交建议
 

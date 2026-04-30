@@ -34,6 +34,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene-prim", default="/World/Robocon2026Map", help="Scene prim path")
     parser.add_argument("--lidar-prim", default="/World/Go2W/base/lidar", help="RTX LiDAR prim path")
     parser.add_argument(
+        "--lidar-translation",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, 0.20),
+        metavar=("X", "Y", "Z"),
+        help="Local LiDAR mount translation relative to --lidar-prim parent",
+    )
+    parser.add_argument(
         "--imu-prim",
         default="/World/Go2W/base/trunk/imu_link/Imu_Sensor",
         help="IsaacImuSensor prim read by IsaacReadIMU before publishing /imu",
@@ -49,6 +57,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--imu-frame", default="imu_link", help="ROS TF frame name for the IMU prim")
     parser.add_argument("--tf-parent-prim", default="/World", help="Parent prim for Isaac ROS2PublishTransformTree")
     parser.add_argument("--scan-rate", type=float, default=10.0, help="Configured RTX LiDAR scan rate")
+    parser.add_argument(
+        "--no-viewer-setup",
+        action="store_true",
+        help="Do not add the default viewer light/camera framing helpers",
+    )
+    parser.add_argument(
+        "--viewer-light-prim",
+        default="/World/ViewerLight",
+        help="Dome light prim created when the referenced USDs do not provide lights",
+    )
+    parser.add_argument(
+        "--viewer-light-intensity",
+        type=float,
+        default=2000.0,
+        help="Intensity for the fallback viewer dome light",
+    )
+    parser.add_argument(
+        "--camera-eye",
+        type=float,
+        nargs=3,
+        default=(6.0, -8.0, 4.0),
+        metavar=("X", "Y", "Z"),
+        help="Initial GUI viewport camera position",
+    )
+    parser.add_argument(
+        "--camera-target",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, 0.7),
+        metavar=("X", "Y", "Z"),
+        help="Initial GUI viewport camera target",
+    )
     parser.add_argument(
         "--max-steps",
         type=int,
@@ -110,9 +150,9 @@ def _enable_physics_sensors(extensions) -> None:
     raise RuntimeError(f"Unable to enable Isaac physics sensor extension: {last_error}")
 
 
-def _create_rtx_lidar(lidar_prim: str, scan_rate: float) -> str:
+def _create_rtx_lidar(lidar_prim: str, scan_rate: float, translation: tuple[float, float, float]) -> str:
     import omni.kit.commands
-    from pxr import Sdf
+    from pxr import Gf, Sdf, UsdGeom
     import omni.usd
 
     if abs(scan_rate - round(scan_rate)) > 1e-6 or scan_rate <= 0:
@@ -131,6 +171,7 @@ def _create_rtx_lidar(lidar_prim: str, scan_rate: float) -> str:
                 path=name,
                 parent=parent,
                 config="Example_Rotary",
+                translation=Gf.Vec3d(*translation),
             )
             if not success:
                 raise RuntimeError("IsaacSensorCreateRtxLidar returned success=False")
@@ -139,6 +180,13 @@ def _create_rtx_lidar(lidar_prim: str, scan_rate: float) -> str:
                 "Could not create RTX LiDAR. Verify installed Isaac version exposes "
                 "IsaacSensorCreateRtxLidar and Example_Rotary config."
             ) from exc
+    xformable = UsdGeom.Xformable(prim)
+    translate_ops = [op for op in xformable.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate]
+    if translate_ops:
+        translate_ops[0].Set(Gf.Vec3d(*translation))
+    else:
+        xformable.AddTranslateOp().Set(Gf.Vec3d(*translation))
+
     # Required for metadata/timestamp exposure in recent Isaac builds.
     try:
         attr = prim.CreateAttribute("omni:sensor:Core:auxOutputType", Sdf.ValueTypeNames.Token)
@@ -255,7 +303,12 @@ def _attach_rtx_lidar_pointcloud_writer(lidar_prim_path: str, topic_name: str, f
     """
     import omni.replicator.core as rep
 
-    render_product = rep.create.render_product(lidar_prim_path, [1, 1], name="IsaacFastLioRtxLidar")
+    render_product = rep.create.render_product(
+        lidar_prim_path,
+        (128, 128),
+        name="IsaacFastLioRtxLidar",
+        render_vars=["GenericModelOutput", "RtxSensorMetadata"],
+    )
     writer = rep.writers.get("RtxLidar" + "ROS2PublishPointCloud")
     writer.initialize(topicName=topic_name, frameId=frame_id)
     writer.attach([render_product])
@@ -273,6 +326,58 @@ def _set_name_override(stage, prim_path: str, frame_name: str) -> None:
     if not attr:
         attr = prim.CreateAttribute("isaac:nameOverride", Sdf.ValueTypeNames.String)
     attr.Set(frame_name)
+
+
+def _stage_has_light(stage) -> bool:
+    for prim in stage.Traverse():
+        if prim.IsActive() and prim.GetTypeName().endswith("Light"):
+            return True
+    return False
+
+
+def _ensure_viewer_light(stage, light_prim: str, intensity: float) -> bool:
+    """Create a fallback light when loaded USD assets do not contain one.
+
+    The Robocon map asset is shared with Isaac Lab tasks that add lights from
+    their scene config. This standalone ROS2 runner loads the raw USDs directly,
+    so it must provide its own light or RaytracedLighting can render a black
+    viewport even when geometry is loaded correctly.
+    """
+
+    if _stage_has_light(stage):
+        return False
+
+    from pxr import UsdLux
+
+    light = UsdLux.DomeLight.Define(stage, light_prim)
+    light.CreateIntensityAttr(float(intensity))
+    print(
+        f"[INFO] Added fallback viewer DomeLight at {light_prim} "
+        f"(intensity={float(intensity):g}).",
+        flush=True,
+    )
+    return True
+
+
+def _set_initial_viewer_camera(
+    camera_eye: tuple[float, float, float],
+    camera_target: tuple[float, float, float],
+) -> None:
+    """Aim the active GUI viewport at the loaded map/robot.
+
+    This is best-effort: in headless runs there may be no active viewport, so
+    the helper logs a warning and returns without affecting simulation/ROS.
+    """
+
+    from isaacsim.core.utils import viewports
+
+    viewports.set_camera_view(np.array(camera_eye, dtype=float), np.array(camera_target, dtype=float))
+
+
+def _requires_rendering_step() -> bool:
+    """RTX LiDAR data is produced by the render pipeline, even in headless mode."""
+
+    return True
 
 
 def _build_action_graph(args, imu_prim_path: str) -> None:
@@ -371,7 +476,11 @@ def main() -> int:
             _enable_physics_sensors(extensions)
 
         with _runner_stage("create_simulation_context"):
-            simulation_context = SimulationContext(stage_units_in_meters=1.0, physics_dt=1 / 120.0, rendering_dt=1 / 60.0)
+            simulation_context = SimulationContext(
+                stage_units_in_meters=1.0,
+                physics_dt=1 / 120.0,
+                rendering_dt=1 / 60.0,
+            )
 
         with _runner_stage("load_scene_reference"):
             stage.add_reference_to_stage(_abs_usd(args.scene), args.scene_prim)
@@ -388,15 +497,25 @@ def main() -> int:
         with _runner_stage("create_lidar_and_frame_aliases"):
             usd_stage = omni.usd.get_context().get_stage()
             _disable_referenced_ros_graphs(usd_stage, args.robot_prim)
-            lidar_prim_path = _create_rtx_lidar(args.lidar_prim, args.scan_rate)
+            lidar_prim_path = _create_rtx_lidar(args.lidar_prim, args.scan_rate, tuple(args.lidar_translation))
             imu_prim_path = _ensure_imu_sensor(usd_stage, args.imu_prim, args.robot_prim, args.articulation_prim)
             _set_name_override(usd_stage, args.robot_prim, args.base_frame)
             _set_name_override(usd_stage, args.articulation_prim, args.base_frame)
             _set_name_override(usd_stage, imu_prim_path, args.imu_frame)
             _set_name_override(usd_stage, args.lidar_prim, args.lidar_frame)
 
+        if not args.no_viewer_setup:
+            with _runner_stage("configure_viewer_light_and_camera"):
+                _ensure_viewer_light(usd_stage, args.viewer_light_prim, args.viewer_light_intensity)
+                if not args.headless:
+                    _set_initial_viewer_camera(tuple(args.camera_eye), tuple(args.camera_target))
+
         with _runner_stage("attach_rtx_lidar_pointcloud_writer"):
-            rtx_lidar_handles = _attach_rtx_lidar_pointcloud_writer(lidar_prim_path, args.points_topic, args.lidar_frame)
+            rtx_lidar_handles = _attach_rtx_lidar_pointcloud_writer(
+                lidar_prim_path,
+                args.points_topic,
+                args.lidar_frame,
+            )
             print(f"[INFO] RTX LiDAR PointCloud2 writer attached: {rtx_lidar_handles}", flush=True)
 
         with _runner_stage("build_ros2_action_graph"):
@@ -411,7 +530,7 @@ def main() -> int:
         print("[RUNNER] ENTER simulation_loop", flush=True)
         steps = 0
         while simulation_app.is_running():
-            simulation_context.step(render=not args.headless)
+            simulation_context.step(render=_requires_rendering_step())
             og.Controller.set(og.Controller.attribute("/ActionGraph/OnImpulseEvent.state:enableImpulse"), True)
             steps += 1
             if args.max_steps and steps >= args.max_steps:
