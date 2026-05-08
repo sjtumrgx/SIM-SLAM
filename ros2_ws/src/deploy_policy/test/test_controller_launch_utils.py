@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "launch"))
 
-from controller_launch_utils import format_preflight_error, probe_python_runtime
+from controller_launch_utils import _resolve_python_executable, format_preflight_error, probe_python_runtime
 
 
 def test_probe_python_runtime_accepts_standard_library_module():
@@ -12,6 +12,15 @@ def test_probe_python_runtime_accepts_standard_library_module():
     assert probe["modules"]["json"]["ok"], probe
     assert probe["executable"]
     assert probe["version"]
+
+
+def test_default_python_runtime_uses_launch_interpreter(monkeypatch):
+    monkeypatch.setattr(
+        "controller_launch_utils.LaunchConfiguration",
+        lambda _name: type("ConfiguredPython", (), {"perform": lambda _self, _context: ""})(),
+    )
+
+    assert _resolve_python_executable(object()) == sys.executable
 
 
 def test_preflight_error_explains_rclpy_abi_mismatch():

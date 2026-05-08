@@ -1,9 +1,19 @@
+import os
+import sys
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+sys.path.insert(0, os.path.dirname(__file__))
+from controller_launch_utils import (  # noqa: E402
+    declare_python_executable_argument,
+    python_node_with_preflight,
+)
 
 
 def generate_launch_description():
@@ -18,6 +28,40 @@ def generate_launch_description():
     rviz = LaunchConfiguration("rviz")
     rviz_cfg = LaunchConfiguration("rviz_cfg")
     publish_static_tf = LaunchConfiguration("publish_static_tf")
+    enable_adapter = LaunchConfiguration("enable_adapter")
+    input_topic = LaunchConfiguration("input_topic")
+    output_topic = LaunchConfiguration("output_topic")
+    timestamp_unit = LaunchConfiguration("timestamp_unit")
+    lidar_type = LaunchConfiguration("lidar_type")
+    scan_rate_hz = LaunchConfiguration("scan_rate_hz")
+    scan_rate_int = PythonExpression(["int(float('", scan_rate_hz, "'))"])
+    scan_line = LaunchConfiguration("scan_line")
+    frame_id = LaunchConfiguration("frame_id")
+    derive_time_if_missing = LaunchConfiguration("derive_time_if_missing")
+    derive_ring_if_missing = LaunchConfiguration("derive_ring_if_missing")
+    derive_intensity_if_missing = LaunchConfiguration("derive_intensity_if_missing")
+
+    adapter_node = python_node_with_preflight(
+        package="deploy_policy",
+        executable="isaac_pointcloud_time_adapter.py",
+        name="isaac_pointcloud_time_adapter",
+        output="screen",
+        required_modules=("rclpy",),
+        parameters=[{
+            "input_topic": input_topic,
+            "output_topic": output_topic,
+            "timestamp_unit": ParameterValue(timestamp_unit, value_type=int),
+            "lidar_type": ParameterValue(lidar_type, value_type=int),
+            "scan_rate_hz": ParameterValue(scan_rate_hz, value_type=float),
+            "derive_time_if_missing": ParameterValue(derive_time_if_missing, value_type=bool),
+            "derive_ring_if_missing": ParameterValue(derive_ring_if_missing, value_type=bool),
+            "derive_intensity_if_missing": ParameterValue(derive_intensity_if_missing, value_type=bool),
+            "scan_line": ParameterValue(scan_line, value_type=int),
+            "frame_id": frame_id,
+            "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+        }],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("config_file", default_value=default_config),
@@ -27,6 +71,26 @@ def generate_launch_description():
             "publish_static_tf",
             default_value="true",
             description="Publish FAST-LIO fork frame aliases: camera_init/map/odom/body/base_link/sensor frames.",
+        ),
+        DeclareLaunchArgument(
+            "enable_adapter",
+            default_value="true",
+            description="Start the Isaac /points_raw -> FAST-LIO /points_fast_lio adapter in this Route A launch.",
+        ),
+        DeclareLaunchArgument("input_topic", default_value="/points_raw"),
+        DeclareLaunchArgument("output_topic", default_value="/points_fast_lio"),
+        DeclareLaunchArgument("timestamp_unit", default_value="0"),
+        DeclareLaunchArgument("lidar_type", default_value="2"),
+        DeclareLaunchArgument("scan_rate_hz", default_value="10"),
+        DeclareLaunchArgument("derive_time_if_missing", default_value="true"),
+        DeclareLaunchArgument("derive_ring_if_missing", default_value="true"),
+        DeclareLaunchArgument("derive_intensity_if_missing", default_value="true"),
+        DeclareLaunchArgument("scan_line", default_value="32"),
+        DeclareLaunchArgument("frame_id", default_value="lidar_link"),
+        declare_python_executable_argument(),
+        GroupAction(
+            actions=[adapter_node],
+            condition=IfCondition(enable_adapter),
         ),
         Node(
             package="tf2_ros",
@@ -72,7 +136,17 @@ def generate_launch_description():
             package="fast_lio",
             executable="fastlio_mapping",
             name="fastlio_mapping",
-            parameters=[config_file, {"use_sim_time": use_sim_time}],
+            parameters=[
+                config_file,
+                {
+                    "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                    "common.lid_topic": output_topic,
+                    "preprocess.lidar_type": ParameterValue(lidar_type, value_type=int),
+                    "preprocess.timestamp_unit": ParameterValue(timestamp_unit, value_type=int),
+                    "preprocess.scan_rate": ParameterValue(scan_rate_int, value_type=int),
+                    "preprocess.scan_line": ParameterValue(scan_line, value_type=int),
+                },
+            ],
             output="screen",
         ),
         Node(

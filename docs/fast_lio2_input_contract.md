@@ -50,7 +50,7 @@ From `ros2_ws/src/FAST_LIO/src/preprocess.cpp`:
 - `time` float field for `lidar_type: 2`
 - `ring` uint16 field if FAST-LIO Velodyne handler requires scan-line routing
 
-The current checker validates `time`/`t` timing and, when invoked with `--lidar-type 2`, requires `x/y/z/intensity` float32 plus `ring` uint16. The adapter uses the same strict contract before publishing. It can derive `time` and `ring` only when `derive_time_if_missing:=true` / `derive_ring_if_missing:=true`; this must be backed by a documented scan-line ordering assumption for the selected RTX LiDAR mode.
+The current checker validates `time`/`t` timing and, when invoked with `--lidar-type 2`, requires `x/y/z/intensity` float32 plus `ring` uint16. The adapter uses the same strict contract before publishing. It can derive `intensity`, `time`, and `ring` only when `derive_intensity_if_missing:=true`, `derive_time_if_missing:=true`, and `derive_ring_if_missing:=true`. Route A enables those derivations by default for the current Isaac `x/y/z` simulation path, but this is a first-pass simulation assumption: passing the checker proves the PointCloud2 field/timing contract, not final scan-order semantics or map quality.
 
 ## Config Fields
 

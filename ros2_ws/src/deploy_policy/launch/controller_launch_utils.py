@@ -15,6 +15,7 @@ import json
 import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
 from typing import Iterable, Mapping, Sequence
 
@@ -34,9 +35,9 @@ def declare_python_executable_argument() -> DeclareLaunchArgument:
         default_value="",
         description=(
             "Python interpreter used to run deploy_policy Python nodes. "
-            "Leave empty to use PATH's python3. For apt ROS 2 Humble policy "
-            "controllers, use a Python 3.10 interpreter that can import both "
-            "rclpy and torch."
+            "Leave empty to use the ros2 launch interpreter. For apt ROS 2 "
+            "Humble policy controllers, use a Python 3.10 interpreter that "
+            "can import both rclpy and torch."
         ),
     )
 
@@ -85,7 +86,7 @@ def _resolve_python_executable(context) -> str:
     configured = LaunchConfiguration(PYTHON_EXECUTABLE_ARGUMENT).perform(context).strip()
     if configured:
         return configured
-    return shutil.which("python3") or "python3"
+    return sys.executable or shutil.which("python3") or "python3"
 
 
 def probe_python_runtime(python_executable: str, required_modules: Iterable[str]) -> dict:

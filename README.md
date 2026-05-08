@@ -564,6 +564,8 @@ python scripts/ros2/isaac_fast_lio2_go2w_scene.py \
 python scripts/ros2/isaac_fast_lio2_go2w_scene.py --headless --max-steps 1
 ```
 
+默认 RTX LiDAR 点云 writer 使用 full-scan buffer 模式，约按 `--scan-rate 10.0` 发布完整扫描；FAST-LIO2 需要这种输入。如果要复现/对照旧的 per-render partial scan 行为，可显式加 `--partial-scan-pointcloud`，但该模式不适合作为 FAST-LIO2 默认输入。
+
 ### A2. 验证 Isaac 原始点云不是空云
 
 终端 B 使用 ROS 2 Humble shell：
@@ -577,9 +579,15 @@ ros2 topic list
 ros2 topic echo /clock --once
 ros2 topic echo /imu --once
 ros2 topic echo /points_raw --once
+ros2 topic hz /points_raw
+ros2 run deploy_policy check_pointcloud_timing.py \
+  --topic /points_raw \
+  --dry-run-schema \
+  --timeout-sec 10 \
+  --json
 ```
 
-`/points_raw` 应该是 `sensor_msgs/msg/PointCloud2`，并且 `width > 0`、`data` 非空。只有 topic 名存在但 `width: 0` 时，FAST-LIO2 仍然不会有点云输出。
+`/points_raw` 应该是 `sensor_msgs/msg/PointCloud2`，并且 `width > 0`、`data` 非空。当前 Isaac raw cloud 通常只有 `x/y/z` 字段，这是正常的；A3/A4 的 adapter 会补齐 FAST-LIO2 需要的 `intensity/time/ring`。`ros2 topic hz /points_raw` 应接近 runner 的 `--scan-rate`（默认 10 Hz）；如果是 60–70 Hz，通常说明仍在使用 partial-scan writer。`/imu` 的 `linear_acceleration.z` 静止时应接近 `9.8`，否则 FAST-LIO2 初始化会不稳定。
 
 Isaac 侧主要 topic：
 
@@ -591,9 +599,11 @@ Isaac 侧主要 topic：
 | `/points_raw` | `sensor_msgs/msg/PointCloud2` | 发布 | RTX LiDAR 原始点云，给 adapter 使用 |
 | `/joint_command` | `sensor_msgs/msg/JointState` | 订阅 | 来自策略控制器的关节命令 |
 
-### A3. 启动 Isaac 点云 adapter
+### A3. 可选：单独启动 Isaac 点云 adapter 做分阶段调试
 
-FAST-LIO2 不能直接消费本仓库当前 Isaac 原始 `x/y/z` 点云；应先转成 `/points_fast_lio`，补齐 Velodyne-style `intensity`、逐点 `time` 和 `ring` 字段：
+FAST-LIO2 不能直接消费本仓库当前 Isaac 原始 `x/y/z` 点云；需要先转成 `/points_fast_lio`，补齐 Velodyne-style `intensity`、逐点 `time` 和 `ring` 字段。
+
+`fast_lio_isaac_go2w.launch.py` 现在默认会启动这个 adapter，并为当前 Isaac `x/y/z` 点云启用派生字段；如果你使用 A4 默认启动方式，**不要再同时运行下面的 standalone adapter**，否则会出现重复 `/points_fast_lio` publisher。只有在分阶段调试时才单独运行 A3；之后启动 A4 时请加 `enable_adapter:=false`。
 
 ```bash
 ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
@@ -619,12 +629,15 @@ ros2 run deploy_policy check_pointcloud_timing.py \
   --scan-rate 10.0 \
   --timestamp-unit 0 \
   --lidar-type 2 \
-  --max-clock-skew-sec 0.1
+  --timeout-sec 10 \
+  --json
 ```
+
+说明：默认不要加过严的 `--max-clock-skew-sec 0.1` 作为首要判据；仿真调度下 clock/header skew 可能较大，但只要字段、类型、逐点时间跨度和 FAST-LIO2 输出链路通过，点云契约本身就是有效的。
 
 完整字段契约见 [`docs/fast_lio2_input_contract.md`](docs/fast_lio2_input_contract.md)。
 
-### A4. 启动 Isaac 专用 FAST-LIO2
+### A4. 启动 Isaac 专用 FAST-LIO2（默认同时启动 adapter）
 
 ```bash
 ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
@@ -632,11 +645,19 @@ ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
 
 该 launch 默认使用：
 
+- 自动 adapter：`enable_adapter:=true`，`/points_raw` → `/points_fast_lio`
+- 派生字段：`derive_time_if_missing:=true`、`derive_ring_if_missing:=true`、`derive_intensity_if_missing:=true`
 - FAST-LIO2 config：`ros2_ws/src/deploy_policy/config/fast_lio/isaac_go2w.yaml`
 - 输入点云：`/points_fast_lio`
 - 输入 IMU：`/imu`
 - 仿真时间：`use_sim_time:=true`
 - RViz 配置：`ros2_ws/src/deploy_policy/rviz/fast_lio_isaac_go2w.rviz`
+
+如果你已经按 A3 单独启动了 adapter，请用下面的命令避免重复 `/points_fast_lio` publisher：
+
+```bash
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true enable_adapter:=false
+```
 
 常用观察命令：
 
@@ -644,7 +665,12 @@ ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
 ros2 topic hz /points_raw
 ros2 topic hz /points_fast_lio
 ros2 topic list | grep -E 'cloud|path|odom|map|lio'
+ros2 topic info -v /points_fast_lio
+ros2 topic echo /Odometry --once
+ros2 run tf2_ros tf2_echo camera_init body
 ```
+
+成功时应看到 `/points_fast_lio` 只有一个 adapter publisher、FAST-LIO2 是 subscriber，并出现 `/cloud_registered`、`/Odometry`、`/path` 等输出。启动初期偶发一次 `No point, skip this scan!` 可以忽略；如果持续出现 `No Effective Points!` 或 RViz 仍只有大箭头/椭圆等异常形状，应按顺序检查 `/points_raw` full-scan 频率、`/points_fast_lio` 契约、`/imu` gravity 和 FAST-LIO2 输出 topic，而不是先调整 RViz 样式。
 
 完整 IsaacSim runbook 见 [`docs/isaac_fast_lio2_workflow.md`](docs/isaac_fast_lio2_workflow.md)。
 

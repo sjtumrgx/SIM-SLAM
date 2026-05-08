@@ -8,7 +8,26 @@ import time
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState, Imu
-from message_filters import Subscriber, TimeSynchronizer
+from message_filters import ApproximateTimeSynchronizer, Subscriber
+
+
+def make_sensor_synchronizer(subscribers, queue_size=30, slop=0.05):
+    """Synchronize Isaac joint-state and IMU streams with timestamp tolerance.
+
+    Isaac's joint-state publisher and IMU publisher are triggered from the same
+    ActionGraph tick, but their message headers can be stamped from different
+    sources (simulation time vs. IMU sensor time). Exact synchronization can
+    therefore starve the controller callback and prevent any joint commands
+    from being published.
+    """
+
+    return ApproximateTimeSynchronizer(
+        subscribers,
+        queue_size=queue_size,
+        slop=slop,
+        allow_headerless=False,
+    )
+
 
 class GO2WController(Node):
     def __init__(self):
@@ -27,13 +46,13 @@ class GO2WController(Node):
         )
 
         self._cmd_vel_subscription = self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_callback, 10)
-        self._joint_publisher = self.create_publisher(JointState, f'joint_command', sim_qos_profile)
-        self._imu_sub_filter = Subscriber(self, Imu, f'imu', qos_profile=sim_qos_profile)
-        self._joint_states_sub_filter = Subscriber(self, JointState, f'joint_states', qos_profile=sim_qos_profile)
+        self._joint_publisher = self.create_publisher(JointState, 'joint_command', sim_qos_profile)
+        self._imu_sub_filter = Subscriber(self, Imu, 'imu', qos_profile=sim_qos_profile)
+        self._joint_states_sub_filter = Subscriber(self, JointState, 'joint_states', qos_profile=sim_qos_profile)
 
-        queue_size = 10
+        queue_size = 30
         subscribers = [self._joint_states_sub_filter, self._imu_sub_filter]
-        self._sync = TimeSynchronizer(subscribers, queue_size)
+        self._sync = make_sensor_synchronizer(subscribers, queue_size=queue_size, slop=0.05)
         self._sync.registerCallback(self.synchronized_callback)
 
         self.policy_path = self.get_parameter('policy_path').get_parameter_value().string_value
@@ -53,10 +72,10 @@ class GO2WController(Node):
         self._dt = 0.0
 
         self.default_pos = np.array([
-            0.1, 0.1, -0.1, -0.1, 
+            0.1, 0.1, -0.1, -0.1,
             0.8, 0.8, 1.0, 1.0,
             -1.5, -1.5, -1.5, -1.5,
-            0.0, 0.0, 0.0, 0.0 
+            0.0, 0.0, 0.0, 0.0
         ])
         self.joint_names = [
             "FL_hip_joint",
@@ -79,8 +98,8 @@ class GO2WController(Node):
 
         self.action_length = len(self.default_pos)
         self._action_scale = [
-            0.125, 0.125, 0.125, 0.125, 
-            0.25, 0.25, 0.25, 0.25, 
+            0.125, 0.125, 0.125, 0.125,
+            0.25, 0.25, 0.25, 0.25,
             0.25, 0.25, 0.25, 0.25,
             5.0, 5.0, 5.0, 5.0,
         ]
@@ -144,7 +163,7 @@ class GO2WController(Node):
         velocity_cmd[:-4] = [float("nan"), float("nan"), float("nan"), float("nan"),
                              float("nan"), float("nan"), float("nan"), float("nan"),
                              float("nan"), float("nan"), float("nan"), float("nan")]
-        velocity_cmd[-4:] = np.clip(self._filtered_action[-4:] * self._action_scale[-4:], -100.0, 100.0) 
+        velocity_cmd[-4:] = np.clip(self._filtered_action[-4:] * self._action_scale[-4:], -100.0, 100.0)
 
         self._joint_command.position = position_cmd
         self._joint_command.velocity = velocity_cmd
@@ -212,7 +231,7 @@ class GO2WController(Node):
         # idx += 3
 
         # Gravity direction (3)
-        obs[idx:idx+3] = np.clip(projected_gravity * 1.0, -100.0, 100.0)
+        obs[idx:idx + 3] = np.clip(projected_gravity * 1.0, -100.0, 100.0)
         idx += 3
 
         # Velocity commands (3)
@@ -221,7 +240,7 @@ class GO2WController(Node):
             self._cmd_vel.linear.y,
             self._cmd_vel.angular.z,
         ]
-        obs[idx:idx+3] = np.clip(np.array(velocity_commands) * 1.0, -100.0, 100.0)
+        obs[idx:idx + 3] = np.clip(np.array(velocity_commands) * 1.0, -100.0, 100.0)
         idx += 3
 
         # Joint states (19 positions + 19 velocities)

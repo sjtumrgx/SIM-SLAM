@@ -50,3 +50,59 @@ def test_derives_velodyne_fields_from_isaac_xyz_cloud():
         timing_contract_for_lidar_type(lidar_type=2, timestamp_unit=0, scan_rate_hz=10.0),
     )
     assert result.ok, result.errors
+
+
+def _read_uint16_field(msg, field_name):
+    field = next(item for item in msg.fields if item.name == field_name)
+    return [
+        struct.unpack_from("<H", bytes(msg.data), index * msg.point_step + field.offset)[0]
+        for index in range(msg.width)
+    ]
+
+
+def test_derived_ring_uses_configured_scan_line_and_time_uses_frame_id():
+    adapter = object.__new__(IsaacPointCloudTimeAdapter)
+    adapter.field_name = "time"
+    adapter.timestamp_unit = 0
+    adapter.scan_rate_hz = 5.0
+    adapter.scan_line = 3
+    adapter.frame_id = "custom_lidar"
+
+    adapted = adapter._append_derived_intensity(_xyz_cloud(point_count=7))
+    adapted = adapter._append_derived_time(adapted)
+    adapted = adapter._append_derived_ring(adapted)
+
+    assert adapted.header.frame_id == "custom_lidar"
+    assert _read_uint16_field(adapted, "ring") == [0, 1, 2, 0, 1, 2, 0]
+
+    result = validate_pointcloud_timing(
+        adapted,
+        timing_contract_for_lidar_type(lidar_type=2, timestamp_unit=0, scan_rate_hz=5.0),
+    )
+    assert result.ok, result.errors
+    assert abs(result.span_seconds - 0.2) < 1e-6
+
+
+def test_rejects_invalid_derived_timing_configuration():
+    adapter = object.__new__(IsaacPointCloudTimeAdapter)
+    adapter.timestamp_unit = 0
+    adapter.scan_rate_hz = 0.0
+
+    try:
+        adapter._append_derived_time(_xyz_cloud())
+    except ValueError as exc:
+        assert "scan_rate_hz must be positive" in str(exc)
+    else:
+        raise AssertionError("invalid scan_rate_hz should fail")
+
+
+def test_rejects_invalid_derived_ring_configuration():
+    adapter = object.__new__(IsaacPointCloudTimeAdapter)
+    adapter.scan_line = 0
+
+    try:
+        adapter._append_derived_ring(_xyz_cloud())
+    except ValueError as exc:
+        assert "scan_line must be positive" in str(exc)
+    else:
+        raise AssertionError("invalid scan_line should fail")

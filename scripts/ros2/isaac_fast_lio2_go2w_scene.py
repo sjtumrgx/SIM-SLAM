@@ -52,6 +52,15 @@ def parse_args() -> argparse.Namespace:
         help="Go2W articulation root prim used by joint-state publishers and the articulation controller",
     )
     parser.add_argument("--points-topic", default="points_raw", help="Raw RTX LiDAR PointCloud2 topic")
+    parser.add_argument(
+        "--partial-scan-pointcloud",
+        action="store_true",
+        help=(
+            "Publish per-render partial RTX LiDAR point-cloud slices. "
+            "Default is full-scan buffering, which is required for FAST-LIO2."
+        ),
+    )
+    parser.add_argument("--imu-topic", default="imu", help="ROS Imu topic published from the Isaac IMU sensor")
     parser.add_argument("--lidar-frame", default="lidar_link", help="LiDAR frame id")
     parser.add_argument("--base-frame", default="base_link", help="ROS TF frame name for the robot root")
     parser.add_argument("--imu-frame", default="imu_link", help="ROS TF frame name for the IMU prim")
@@ -294,12 +303,26 @@ def _disable_referenced_ros_graphs(stage, robot_prim: str) -> list[str]:
     return disabled
 
 
-def _attach_rtx_lidar_pointcloud_writer(lidar_prim_path: str, topic_name: str, frame_id: str) -> object:
+def _rtx_lidar_pointcloud_writer_name(full_scan: bool) -> str:
+    """Return the Isaac ROS2 RTX LiDAR writer name for partial or full scans."""
+
+    suffix = "PublishPointCloudBuffer" if full_scan else "PublishPointCloud"
+    return "RtxLidar" + "ROS2" + suffix
+
+
+def _attach_rtx_lidar_pointcloud_writer(
+    lidar_prim_path: str,
+    topic_name: str,
+    frame_id: str,
+    *,
+    full_scan: bool,
+) -> object:
     """Attach the official Replicator RTX LiDAR ROS2 PointCloud2 writer.
 
-    NVIDIA's Isaac Sim RTX LiDAR ROS2 tutorial requires a render product for
-    each RTX sensor before PointCloud2 can be published. Keeping the writer and
-    render product alive avoids relying on an unconnected OmniGraph helper node.
+    NVIDIA's Isaac Sim RTX LiDAR ROS2 helper uses the buffer writer for full
+    scans. FAST-LIO2 expects each PointCloud2 to be a complete scan; publishing
+    per-render partial slices makes the adapter schema-valid but breaks the
+    downstream mapping semantics.
     """
     import omni.replicator.core as rep
 
@@ -309,7 +332,7 @@ def _attach_rtx_lidar_pointcloud_writer(lidar_prim_path: str, topic_name: str, f
         name="IsaacFastLioRtxLidar",
         render_vars=["GenericModelOutput", "RtxSensorMetadata"],
     )
-    writer = rep.writers.get("RtxLidar" + "ROS2PublishPointCloud")
+    writer = rep.writers.get(_rtx_lidar_pointcloud_writer_name(full_scan))
     writer.initialize(topicName=topic_name, frameId=frame_id)
     writer.attach([render_product])
     return {"render_product": render_product, "writer": writer}
@@ -380,6 +403,18 @@ def _requires_rendering_step() -> bool:
     return True
 
 
+def _imu_read_gravity_enabled() -> bool:
+    """FAST-LIO2 initialization needs raw accelerometer measurements including gravity."""
+
+    return True
+
+
+def _imu_use_latest_data_enabled() -> bool:
+    """Read the latest physics IMU sample so gravity is available on every tick."""
+
+    return True
+
+
 def _build_action_graph(args, imu_prim_path: str) -> None:
     import omni.graph.core as og
     import usdrt.Sdf
@@ -431,8 +466,9 @@ def _build_action_graph(args, imu_prim_path: str) -> None:
                 ("SubscribeJointState.inputs:topicName", "joint_command"),
                 ("PublishJointState.inputs:targetPrim", [usdrt.Sdf.Path(args.articulation_prim)]),
                 ("ReadImu.inputs:imuPrim", [usdrt.Sdf.Path(imu_prim_path)]),
-                ("ReadImu.inputs:readGravity", False),
-                ("PublishImu.inputs:topicName", "imu"),
+                ("ReadImu.inputs:readGravity", _imu_read_gravity_enabled()),
+                ("ReadImu.inputs:useLatestData", _imu_use_latest_data_enabled()),
+                ("PublishImu.inputs:topicName", args.imu_topic),
                 ("PublishImu.inputs:frameId", args.imu_frame),
                 ("PublishTf.inputs:parentPrim", usdrt.Sdf.Path(args.tf_parent_prim)),
                 (
@@ -515,6 +551,7 @@ def main() -> int:
                 lidar_prim_path,
                 args.points_topic,
                 args.lidar_frame,
+                full_scan=not args.partial_scan_pointcloud,
             )
             print(f"[INFO] RTX LiDAR PointCloud2 writer attached: {rtx_lidar_handles}", flush=True)
 
@@ -526,6 +563,11 @@ def main() -> int:
 
         with _runner_stage("play_simulation"):
             simulation_context.play()
+            # Let physics sensors produce their first valid sample before the
+            # ROS ActionGraph starts publishing. Without this warm-up the IMU
+            # stream can get stuck at zero linear acceleration in Isaac 5.1,
+            # which prevents FAST-LIO2 from initializing gravity correctly.
+            simulation_context.step(render=_requires_rendering_step())
 
         print("[RUNNER] ENTER simulation_loop", flush=True)
         steps = 0

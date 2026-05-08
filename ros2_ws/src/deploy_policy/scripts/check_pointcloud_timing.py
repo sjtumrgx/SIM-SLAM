@@ -18,9 +18,10 @@ def _load_ros_imports():
     try:
         import rclpy
         from rclpy.node import Node
+        from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import PointCloud2
         from rosgraph_msgs.msg import Clock
-        return rclpy, Node, PointCloud2, Clock
+        return rclpy, Node, qos_profile_sensor_data, PointCloud2, Clock
     except Exception as exc:  # pragma: no cover - depends on ROS sourced env
         raise RuntimeError(
             "ROS 2 Python modules are unavailable. Source /opt/ros/humble/setup.zsh "
@@ -81,7 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        rclpy, Node, PointCloud2, Clock = _load_ros_imports()
+        rclpy, Node, qos_profile_sensor_data, PointCloud2, Clock = _load_ros_imports()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             super().__init__("check_pointcloud_timing")
             self.cloud = None
             self.clock_sec = None
-            self.create_subscription(PointCloud2, args.topic, self._cloud_cb, 10)
+            self.create_subscription(PointCloud2, args.topic, self._cloud_cb, qos_profile_sensor_data)
             if args.clock_topic:
                 self.create_subscription(Clock, args.clock_topic, self._clock_cb, 10)
 

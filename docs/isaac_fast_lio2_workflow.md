@@ -158,7 +158,12 @@ ros2 topic hz /points_raw
 
 ## Stage 4: Start PointCloud2 Timing Adapter
 
-Start strict mode first. This republishes only if the incoming cloud already satisfies FAST-LIO timing requirements.
+There are two supported adapter modes:
+
+1. **Route A wrapper mode** — `fast_lio_isaac_go2w.launch.py` starts the adapter by default and enables derived `intensity/time/ring` for the current Isaac `x/y/z` cloud path. This is the normal one-command ROS-side path.
+2. **Standalone debug mode** — run `isaac_fast_lio_inputs.launch.py` separately when you want to inspect the raw → adapted cloud boundary before FAST-LIO.
+
+Standalone strict mode republishes only if the incoming cloud already satisfies FAST-LIO timing requirements:
 
 ```bash
 ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
@@ -170,14 +175,16 @@ ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
   derive_time_if_missing:=false
 ```
 
-If Stage 0 proves scan ordering and scan rate are valid, derived timing can be enabled explicitly:
+For the current Isaac `x/y/z` PointCloud2 path, enable all derived fields explicitly in standalone debug mode:
 
 ```bash
-ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py derive_time_if_missing:=true \
-  derive_ring_if_missing:=true
+ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
+  derive_time_if_missing:=true \
+  derive_ring_if_missing:=true \
+  derive_intensity_if_missing:=true
 ```
 
-Do not enable derived timing unless the scan-order assumption has been validated for the selected RTX LiDAR mode.
+Do not run standalone debug mode and default Route A wrapper mode at the same time; that creates duplicate `/points_fast_lio` publishers. If standalone adapter is already running, launch FAST-LIO with `enable_adapter:=false`. Passing the timing gate proves the PointCloud2 contract, not final physical scan-order or map-quality correctness.
 
 ## Stage 5: Run Timing Gate
 
@@ -223,7 +230,11 @@ IMU and cloud values should change during motion.
 ## Stage 7: Launch FAST-LIO2
 
 ```bash
+# Normal Route A: starts adapter + FAST-LIO.
 ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py
+
+# If standalone Stage 4 adapter is already running, avoid duplicate /points_fast_lio publishers.
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py enable_adapter:=false
 ```
 
 Check outputs. Topic names may vary by the vendored FAST-LIO2 fork:

@@ -11,6 +11,7 @@ import struct
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 
 try:
@@ -69,8 +70,13 @@ class IsaacPointCloudTimeAdapter(Node):
         self.span_tolerance_ratio = float(self.get_parameter("span_tolerance_ratio").value)
         self.frame_id = str(self.get_parameter("frame_id").value or "")
 
-        self.publisher = self.create_publisher(PointCloud2, self.output_topic, 10)
-        self.subscription = self.create_subscription(PointCloud2, self.input_topic, self._cloud_cb, 10)
+        self.publisher = self.create_publisher(PointCloud2, self.output_topic, qos_profile_sensor_data)
+        self.subscription = self.create_subscription(
+            PointCloud2,
+            self.input_topic,
+            self._cloud_cb,
+            qos_profile_sensor_data,
+        )
         self.get_logger().info(
             f"Adapting {self.input_topic} -> {self.output_topic}; "
             f"lidar_type={self.lidar_type}, timestamp_unit={self.timestamp_unit}, "
@@ -90,7 +96,7 @@ class IsaacPointCloudTimeAdapter(Node):
         if result.ok:
             if self.frame_id:
                 msg.header.frame_id = self.frame_id
-            self.publisher.publish(msg)
+            self._safe_publish(msg)
             return
 
         has_time_field = find_timing_field(msg.fields, contract.accepted_field_names) is not None
@@ -131,7 +137,18 @@ class IsaacPointCloudTimeAdapter(Node):
             return
         if self.frame_id:
             adapted.header.frame_id = self.frame_id
-        self.publisher.publish(adapted)
+        self._safe_publish(adapted)
+
+    def _safe_publish(self, msg: PointCloud2) -> None:
+        """Publish unless ROS shutdown is already invalidating the context."""
+
+        if not rclpy.ok():
+            return
+        try:
+            self.publisher.publish(msg)
+        except Exception as exc:  # pragma: no cover - shutdown race at ROS runtime
+            if rclpy.ok():
+                self.get_logger().error(f"Failed to publish adapted cloud: {exc}")
 
     def _append_derived_intensity(self, msg: PointCloud2) -> PointCloud2:
         point_count = int(msg.width) * int(msg.height)
@@ -244,9 +261,12 @@ def main(args=None) -> None:
     node = IsaacPointCloudTimeAdapter()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":  # pragma: no cover - ROS entrypoint

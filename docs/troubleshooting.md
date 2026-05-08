@@ -154,7 +154,13 @@ ros2 topic info /points_fast_lio -v
 ros2 topic echo /points_fast_lio --once
 ```
 
-IsaacSim 推荐启动：
+IsaacSim 推荐默认启动（Route A wrapper 会自动启动 adapter）：
+
+```bash
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
+```
+
+如果你为了调试已经单独启动了 adapter，再启动 Route A 时必须关闭内置 adapter，避免重复 `/points_fast_lio` publisher：
 
 ```bash
 ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
@@ -162,7 +168,7 @@ ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
   derive_ring_if_missing:=true \
   derive_intensity_if_missing:=true
 
-ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true enable_adapter:=false
 ```
 
 ## 真机 Livox / MID-360 + FAST-LIO2
