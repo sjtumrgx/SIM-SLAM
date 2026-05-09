@@ -10,9 +10,12 @@ from isaac_pointcloud_time_adapter import IsaacPointCloudTimeAdapter
 from pointcloud_timing_core import timing_contract_for_lidar_type, validate_pointcloud_timing
 
 
-def _xyz_cloud(point_count=5):
+def _xyz_cloud(point_count=5, points=None):
     msg = PointCloud2()
     msg.header.frame_id = "lidar_link"
+    if points is None:
+        points = [(float(index), 0.0, 0.0) for index in range(point_count)]
+    point_count = len(points)
     msg.height = 1
     msg.width = point_count
     msg.fields = [
@@ -23,9 +26,16 @@ def _xyz_cloud(point_count=5):
     msg.is_bigendian = False
     msg.point_step = 12
     msg.row_step = msg.point_step * point_count
-    msg.data = b"".join(struct.pack("<fff", float(index), 0.0, 0.0) for index in range(point_count))
+    msg.data = b"".join(struct.pack("<fff", *point) for point in points)
     msg.is_dense = True
     return msg
+
+
+def _read_xyz_points(msg):
+    return [
+        struct.unpack_from("<fff", bytes(msg.data), index * msg.point_step)
+        for index in range(msg.width)
+    ]
 
 
 def test_derives_velodyne_fields_from_isaac_xyz_cloud():
@@ -50,6 +60,30 @@ def test_derives_velodyne_fields_from_isaac_xyz_cloud():
         timing_contract_for_lidar_type(lidar_type=2, timestamp_unit=0, scan_rate_hz=10.0),
     )
     assert result.ok, result.errors
+
+
+def test_filters_invalid_or_huge_isaac_xyz_points_before_fast_lio_derivation():
+    adapter = object.__new__(IsaacPointCloudTimeAdapter)
+    adapter.filter_invalid_xyz = True
+    adapter.max_abs_coordinate = 1_000.0
+
+    filtered, dropped = adapter._filter_invalid_xyz_points(
+        _xyz_cloud(
+            points=[
+                (0.0, 0.0, 1.0),
+                (float("nan"), 0.0, 1.0),
+                (1.0e20, 0.0, 1.0),
+                (2.0, 0.0, 1.0),
+            ],
+        )
+    )
+
+    assert dropped == 2
+    assert filtered.width == 2
+    assert filtered.height == 1
+    assert filtered.row_step == filtered.point_step * filtered.width
+    assert filtered.is_dense is True
+    assert _read_xyz_points(filtered) == [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0)]
 
 
 def _read_uint16_field(msg, field_name):

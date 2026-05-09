@@ -64,7 +64,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lidar-frame", default="lidar_link", help="LiDAR frame id")
     parser.add_argument("--base-frame", default="base_link", help="ROS TF frame name for the robot root")
     parser.add_argument("--imu-frame", default="imu_link", help="ROS TF frame name for the IMU prim")
-    parser.add_argument("--tf-parent-prim", default="/World", help="Parent prim for Isaac ROS2PublishTransformTree")
+    parser.add_argument(
+        "--tf-parent-prim",
+        default="",
+        help=(
+            "Parent prim for Isaac ROS2PublishTransformTree. "
+            "Default is the articulation prim so the robot links stay under base_link; "
+            "using /World also publishes a competing /World->base_link edge."
+        ),
+    )
     parser.add_argument("--scan-rate", type=float, default=10.0, help="Configured RTX LiDAR scan rate")
     parser.add_argument(
         "--no-viewer-setup",
@@ -415,6 +423,37 @@ def _imu_use_latest_data_enabled() -> bool:
     return True
 
 
+def _resolve_tf_parent_prim(args: argparse.Namespace) -> str:
+    """Use the articulation root as TF tree parent unless explicitly overridden.
+
+    FAST-LIO publishes ``camera_init -> body`` and the ROS launch publishes
+    ``body -> base_link``. If Isaac's transform tree also publishes
+    ``/World -> base_link``, ``base_link`` gets two parents and RViz can report
+    intermittent "No transform from [link] to [camera_init]" for every robot
+    link. Publishing the Isaac tree relative to the articulation root keeps the
+    moving link tree rooted at ``base_link`` and lets FAST-LIO own the global
+    pose edge.
+    """
+
+    return str(args.tf_parent_prim or args.articulation_prim)
+
+
+def _frame_aliases(args: argparse.Namespace, imu_prim_path: str, lidar_prim_path: str) -> dict[str, str]:
+    """Return USD prim -> ROS frame aliases owned by the runner.
+
+    Only the articulation root receives ``base_link``. Assigning the same frame
+    alias to both the robot reference Xform and the articulation root creates
+    duplicate ``base_link`` transforms, which is enough for RViz RobotModel to
+    intermittently lose every child link relative to ``camera_init``.
+    """
+
+    return {
+        args.articulation_prim: args.base_frame,
+        imu_prim_path: args.imu_frame,
+        lidar_prim_path: args.lidar_frame,
+    }
+
+
 def _build_action_graph(args, imu_prim_path: str) -> None:
     import omni.graph.core as og
     import usdrt.Sdf
@@ -470,7 +509,7 @@ def _build_action_graph(args, imu_prim_path: str) -> None:
                 ("ReadImu.inputs:useLatestData", _imu_use_latest_data_enabled()),
                 ("PublishImu.inputs:topicName", args.imu_topic),
                 ("PublishImu.inputs:frameId", args.imu_frame),
-                ("PublishTf.inputs:parentPrim", usdrt.Sdf.Path(args.tf_parent_prim)),
+                ("PublishTf.inputs:parentPrim", usdrt.Sdf.Path(_resolve_tf_parent_prim(args))),
                 (
                     "PublishTf.inputs:targetPrims",
                     [
@@ -535,10 +574,8 @@ def main() -> int:
             _disable_referenced_ros_graphs(usd_stage, args.robot_prim)
             lidar_prim_path = _create_rtx_lidar(args.lidar_prim, args.scan_rate, tuple(args.lidar_translation))
             imu_prim_path = _ensure_imu_sensor(usd_stage, args.imu_prim, args.robot_prim, args.articulation_prim)
-            _set_name_override(usd_stage, args.robot_prim, args.base_frame)
-            _set_name_override(usd_stage, args.articulation_prim, args.base_frame)
-            _set_name_override(usd_stage, imu_prim_path, args.imu_frame)
-            _set_name_override(usd_stage, args.lidar_prim, args.lidar_frame)
+            for prim_path, frame_name in _frame_aliases(args, imu_prim_path, lidar_prim_path).items():
+                _set_name_override(usd_stage, prim_path, frame_name)
 
         if not args.no_viewer_setup:
             with _runner_stage("configure_viewer_light_and_camera"):

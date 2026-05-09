@@ -39,10 +39,13 @@ install(FILES
 
 if(BUILD_TESTING)
   ament_add_pytest_test(test_pointcloud_timing_core test/test_pointcloud_timing_core.py)
+  ament_add_pytest_test(test_docs_fast_lio_go2w_debug test/test_docs_fast_lio_go2w_debug.py)
   ament_add_pytest_test(test_isaac_pointcloud_time_adapter test/test_isaac_pointcloud_time_adapter.py)
   ament_add_pytest_test(test_controller_launch_utils test/test_controller_launch_utils.py)
   ament_add_pytest_test(test_go2w_controller_sync test/test_go2w_controller_sync.py)
+  ament_add_pytest_test(test_go2w_controller_launch test/test_go2w_controller_launch.py)
   ament_add_pytest_test(test_fast_lio_isaac_go2w_launch test/test_fast_lio_isaac_go2w_launch.py)
+  ament_add_pytest_test(test_fast_lio_isaac_go2w_rviz test/test_fast_lio_isaac_go2w_rviz.py)
   ament_add_pytest_test(test_isaac_fast_lio2_runner_config test/test_isaac_fast_lio2_runner_config.py)
 endif()
 

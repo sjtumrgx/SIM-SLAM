@@ -28,6 +28,7 @@ def generate_launch_description():
     rviz = LaunchConfiguration("rviz")
     rviz_cfg = LaunchConfiguration("rviz_cfg")
     publish_static_tf = LaunchConfiguration("publish_static_tf")
+    publish_sensor_static_tf = LaunchConfiguration("publish_sensor_static_tf")
     enable_adapter = LaunchConfiguration("enable_adapter")
     input_topic = LaunchConfiguration("input_topic")
     output_topic = LaunchConfiguration("output_topic")
@@ -40,6 +41,8 @@ def generate_launch_description():
     derive_time_if_missing = LaunchConfiguration("derive_time_if_missing")
     derive_ring_if_missing = LaunchConfiguration("derive_ring_if_missing")
     derive_intensity_if_missing = LaunchConfiguration("derive_intensity_if_missing")
+    filter_invalid_xyz = LaunchConfiguration("filter_invalid_xyz")
+    max_abs_coordinate = LaunchConfiguration("max_abs_coordinate")
 
     adapter_node = python_node_with_preflight(
         package="deploy_policy",
@@ -56,6 +59,8 @@ def generate_launch_description():
             "derive_time_if_missing": ParameterValue(derive_time_if_missing, value_type=bool),
             "derive_ring_if_missing": ParameterValue(derive_ring_if_missing, value_type=bool),
             "derive_intensity_if_missing": ParameterValue(derive_intensity_if_missing, value_type=bool),
+            "filter_invalid_xyz": ParameterValue(filter_invalid_xyz, value_type=bool),
+            "max_abs_coordinate": ParameterValue(max_abs_coordinate, value_type=float),
             "scan_line": ParameterValue(scan_line, value_type=int),
             "frame_id": frame_id,
             "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
@@ -70,7 +75,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "publish_static_tf",
             default_value="true",
-            description="Publish FAST-LIO fork frame aliases: camera_init/map/odom/body/base_link/sensor frames.",
+            description="Publish FAST-LIO fork frame aliases: camera_init/map/odom/body/base_link.",
+        ),
+        DeclareLaunchArgument(
+            "publish_sensor_static_tf",
+            default_value="false",
+            description=(
+                "Also publish base_link->imu_link/lidar_link static aliases. "
+                "Keep false for the Isaac runner because its TransformTree publishes the robot/sensor tree."
+            ),
         ),
         DeclareLaunchArgument(
             "enable_adapter",
@@ -85,6 +98,8 @@ def generate_launch_description():
         DeclareLaunchArgument("derive_time_if_missing", default_value="true"),
         DeclareLaunchArgument("derive_ring_if_missing", default_value="true"),
         DeclareLaunchArgument("derive_intensity_if_missing", default_value="true"),
+        DeclareLaunchArgument("filter_invalid_xyz", default_value="true"),
+        DeclareLaunchArgument("max_abs_coordinate", default_value="200.0"),
         DeclareLaunchArgument("scan_line", default_value="32"),
         DeclareLaunchArgument("frame_id", default_value="lidar_link"),
         declare_python_executable_argument(),
@@ -121,7 +136,7 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="base_link_to_imu_tf",
             arguments=["--frame-id", "base_link", "--child-frame-id", "imu_link"],
-            condition=IfCondition(publish_static_tf),
+            condition=IfCondition(PythonExpression(["'", publish_static_tf, "' == 'true' and '", publish_sensor_static_tf, "' == 'true'"])),
             output="screen",
         ),
         Node(
@@ -129,7 +144,7 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="base_link_to_lidar_tf",
             arguments=["--x", "0.0", "--y", "0.0", "--z", "0.20", "--frame-id", "base_link", "--child-frame-id", "lidar_link"],
-            condition=IfCondition(publish_static_tf),
+            condition=IfCondition(PythonExpression(["'", publish_static_tf, "' == 'true' and '", publish_sensor_static_tf, "' == 'true'"])),
             output="screen",
         ),
         Node(

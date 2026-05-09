@@ -35,6 +35,13 @@ class GO2WController(Node):
 
         self.declare_parameter('policy_path', 'policy/policy_1/exported/policy.pt')
         self.declare_parameter('control_frequency', 0.005)
+        self.declare_parameter('max_cmd_vel_x', 0.20)
+        self.declare_parameter('max_cmd_vel_y', 0.10)
+        self.declare_parameter('max_cmd_vel_yaw', 0.30)
+        self.declare_parameter('max_leg_delta', 0.35)
+        self.declare_parameter('max_wheel_velocity', 5.0)
+        self.declare_parameter('hold_without_cmd_vel', True)
+        self.declare_parameter('cmd_vel_timeout_sec', 0.75)
         self.set_parameters([rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, True)])
 
         self._logger = self.get_logger()
@@ -58,11 +65,20 @@ class GO2WController(Node):
         self.policy_path = self.get_parameter('policy_path').get_parameter_value().string_value
 
         self.control_frequency = self.get_parameter('control_frequency').get_parameter_value().double_value
+        self.max_cmd_vel_x = self.get_parameter('max_cmd_vel_x').get_parameter_value().double_value
+        self.max_cmd_vel_y = self.get_parameter('max_cmd_vel_y').get_parameter_value().double_value
+        self.max_cmd_vel_yaw = self.get_parameter('max_cmd_vel_yaw').get_parameter_value().double_value
+        self.max_leg_delta = self.get_parameter('max_leg_delta').get_parameter_value().double_value
+        self.max_wheel_velocity = self.get_parameter('max_wheel_velocity').get_parameter_value().double_value
+        self.hold_without_cmd_vel = self.get_parameter('hold_without_cmd_vel').get_parameter_value().bool_value
+        self.cmd_vel_timeout_sec = self.get_parameter('cmd_vel_timeout_sec').get_parameter_value().double_value
         self.load_policy()
 
         self._joint_state = JointState()
         self._joint_command = JointState()
         self._cmd_vel = Twist()
+        self._cmd_vel_active = False
+        self._last_cmd_vel_time = None
         self._imu = Imu()
 
         self._policy_counter = 0
@@ -120,8 +136,84 @@ class GO2WController(Node):
         self.policy = torch.jit.load(buffer)
 
     def cmd_vel_callback(self, msg):
-        self._cmd_vel = msg
+        self._cmd_vel = self._clip_cmd_vel(msg)
+        self._cmd_vel_active = True
+        self._last_cmd_vel_time = self.get_clock().now().nanoseconds * 1e-9
         # self._logger.info(f"Received cmd_vel: {msg.linear.x}, {msg.linear.y}, {msg.angular.z}")
+
+    def _clip_cmd_vel(self, msg: Twist) -> Twist:
+        clipped = Twist()
+        clipped.linear.x = float(np.clip(msg.linear.x, -abs(self.max_cmd_vel_x), abs(self.max_cmd_vel_x)))
+        clipped.linear.y = float(np.clip(msg.linear.y, -abs(self.max_cmd_vel_y), abs(self.max_cmd_vel_y)))
+        clipped.linear.z = 0.0
+        clipped.angular.x = 0.0
+        clipped.angular.y = 0.0
+        clipped.angular.z = float(np.clip(msg.angular.z, -abs(self.max_cmd_vel_yaw), abs(self.max_cmd_vel_yaw)))
+        return clipped
+
+    def _sanitize_action(self, action) -> np.ndarray:
+        action = np.asarray(action, dtype=float).reshape(-1)
+        if len(action) < self.action_length:
+            action = np.pad(action, (0, self.action_length - len(action)))
+        elif len(action) > self.action_length:
+            action = action[:self.action_length]
+        return np.nan_to_num(action, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _current_joint_positions(self, joint_state: JointState) -> np.ndarray:
+        positions = self.default_pos.copy()
+        for i, name in enumerate(self.joint_names):
+            if name not in joint_state.name:
+                continue
+            joint_idx = joint_state.name.index(name)
+            if joint_idx >= len(joint_state.position):
+                continue
+            value = float(joint_state.position[joint_idx])
+            if np.isfinite(value):
+                positions[i] = value
+        return positions
+
+    def _build_joint_command(self, joint_state: JointState, action: np.ndarray):
+        action = self._sanitize_action(action)
+        current_positions = self._current_joint_positions(joint_state)
+
+        max_leg_delta = abs(getattr(self, "max_leg_delta", 0.35))
+        max_wheel_velocity = abs(getattr(self, "max_wheel_velocity", 5.0))
+
+        leg_delta = action[:-4] * self._action_scale[:-4]
+        leg_delta = np.clip(leg_delta, -max_leg_delta, max_leg_delta)
+        wheel_velocity = action[-4:] * self._action_scale[-4:]
+        wheel_velocity = np.clip(wheel_velocity, -max_wheel_velocity, max_wheel_velocity)
+
+        position_cmd = current_positions.copy()
+        position_cmd[:-4] = self.default_pos[:-4] + leg_delta
+
+        velocity_cmd = np.zeros(len(self.joint_names), dtype=float)
+        velocity_cmd[-4:] = wheel_velocity
+
+        effort_cmd = np.zeros(len(self.joint_names), dtype=float)
+        return position_cmd.tolist(), velocity_cmd.tolist(), effort_cmd.tolist()
+
+    def _cmd_vel_is_active(self, now_sec: float) -> bool:
+        if not getattr(self, "hold_without_cmd_vel", True):
+            return True
+        if not getattr(self, "_cmd_vel_active", False):
+            return False
+        last_cmd = getattr(self, "_last_cmd_vel_time", None)
+        timeout = float(getattr(self, "cmd_vel_timeout_sec", 0.75))
+        if last_cmd is None or timeout <= 0.0:
+            return True
+        return (now_sec - float(last_cmd)) <= timeout
+
+    def _publish_hold_command(self, joint_state: JointState) -> None:
+        self._filtered_action = np.zeros(self.action_length)
+        self._previous_action = np.zeros(self.action_length)
+        self._joint_command.header.stamp = self.get_clock().now().to_msg()
+        self._joint_command.name = self.joint_names
+        position_cmd, velocity_cmd, effort_cmd = self._build_joint_command(joint_state, self._filtered_action)
+        self._joint_command.position = position_cmd
+        self._joint_command.velocity = velocity_cmd
+        self._joint_command.effort = effort_cmd
+        self._joint_publisher.publish(self._joint_command)
 
     def synchronized_callback(self, joint_state: JointState, imu):
         # Reset if time jumped backwards (most likely due to sim time reset)
@@ -135,13 +227,17 @@ class GO2WController(Node):
         self._dt = now - self._last_tick_time
         self._last_tick_time = now
 
+        if not self._cmd_vel_is_active(now):
+            self._publish_hold_command(joint_state)
+            return
+
         # Run the control policy
         # self.forward(joint_state, imu)
 
         # Run policy at reduced frequency (every _decimation ticks)
         if self._policy_counter % self._decimation == 0:
             obs = self._compute_observation(joint_state, imu)
-            self.action = self._compute_action(obs)
+            self.action = self._sanitize_action(self._compute_action(obs))
 
             self._filtered_action = self._filter_alpha * self.action + (1 - self._filter_alpha) * self._previous_action
             self._previous_action = self._filtered_action.copy()
@@ -154,20 +250,10 @@ class GO2WController(Node):
         self._joint_command.header.stamp = self.get_clock().now().to_msg()
         self._joint_command.name = self.joint_names
 
-        # Compute final joint positions by adding scaled actions to default positions
-        position_cmd = np.zeros(len(self.joint_names)).tolist()
-        position_cmd[:-4] = np.clip(self.default_pos[:-4] + self._filtered_action[:-4] * self._action_scale[:-4], -100.0, 100.0)
-        position_cmd[-4:] = [float("nan"), float("nan"), float("nan"), float("nan")]
-
-        velocity_cmd = np.zeros(len(self.joint_names)).tolist()
-        velocity_cmd[:-4] = [float("nan"), float("nan"), float("nan"), float("nan"),
-                             float("nan"), float("nan"), float("nan"), float("nan"),
-                             float("nan"), float("nan"), float("nan"), float("nan")]
-        velocity_cmd[-4:] = np.clip(self._filtered_action[-4:] * self._action_scale[-4:], -100.0, 100.0)
-
+        position_cmd, velocity_cmd, effort_cmd = self._build_joint_command(joint_state, self._filtered_action)
         self._joint_command.position = position_cmd
         self._joint_command.velocity = velocity_cmd
-        self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
+        self._joint_command.effort = effort_cmd
         self._joint_publisher.publish(self._joint_command)
 
     def _get_stamp_prefix(self) -> str:

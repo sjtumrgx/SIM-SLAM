@@ -57,7 +57,16 @@ def _nodes(ld):
     return [action for action in _walk_actions(ld.entities) if isinstance(action, Node)]
 
 
+def _node_name(node):
+    try:
+        return getattr(node, "node_name", None)
+    except RuntimeError:
+        return getattr(node, "_Node__node_name", None)
+
+
 def _has_launch_config(value, name):
+    if hasattr(value, "_IfCondition__predicate_expression"):
+        return _has_launch_config(getattr(value, "_IfCondition__predicate_expression"), name)
     if isinstance(value, LaunchConfiguration):
         return _text_of(getattr(value, "variable_name", None)) == name
     if isinstance(value, ParameterValue):
@@ -102,7 +111,20 @@ def test_route_a_declares_adapter_defaults_for_isaac_xyz_cloud():
     assert args["derive_time_if_missing"] == "true"
     assert args["derive_ring_if_missing"] == "true"
     assert args["derive_intensity_if_missing"] == "true"
+    assert args["publish_sensor_static_tf"] == "false"
     assert "python_executable" in args
+
+
+def test_route_a_does_not_publish_sensor_static_tf_by_default():
+    nodes = _nodes(_launch_description())
+    sensor_tf_nodes = [
+        node
+        for node in nodes
+        if _node_name(node) in {"base_link_to_imu_tf", "base_link_to_lidar_tf"}
+    ]
+
+    assert len(sensor_tf_nodes) == 2
+    assert all(_has_launch_config(getattr(node, "condition", None), "publish_sensor_static_tf") for node in sensor_tf_nodes)
 
 
 def test_route_a_wraps_adapter_in_enable_adapter_condition():

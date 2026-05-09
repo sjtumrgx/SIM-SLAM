@@ -7,6 +7,7 @@ scan-order validation for the selected Isaac RTX LiDAR mode.
 """
 from __future__ import annotations
 
+import math
 import struct
 
 import rclpy
@@ -53,6 +54,8 @@ class IsaacPointCloudTimeAdapter(Node):
         self.declare_parameter("derive_time_if_missing", False)
         self.declare_parameter("derive_ring_if_missing", False)
         self.declare_parameter("derive_intensity_if_missing", False)
+        self.declare_parameter("filter_invalid_xyz", True)
+        self.declare_parameter("max_abs_coordinate", 200.0)
         self.declare_parameter("scan_line", 32)
         self.declare_parameter("span_tolerance_ratio", 0.20)
         self.declare_parameter("frame_id", "")
@@ -66,9 +69,12 @@ class IsaacPointCloudTimeAdapter(Node):
         self.derive_time_if_missing = _as_bool(self.get_parameter("derive_time_if_missing").value)
         self.derive_ring_if_missing = _as_bool(self.get_parameter("derive_ring_if_missing").value)
         self.derive_intensity_if_missing = _as_bool(self.get_parameter("derive_intensity_if_missing").value)
+        self.filter_invalid_xyz = _as_bool(self.get_parameter("filter_invalid_xyz").value)
+        self.max_abs_coordinate = float(self.get_parameter("max_abs_coordinate").value)
         self.scan_line = int(self.get_parameter("scan_line").value)
         self.span_tolerance_ratio = float(self.get_parameter("span_tolerance_ratio").value)
         self.frame_id = str(self.get_parameter("frame_id").value or "")
+        self._dropped_invalid_xyz_total = 0
 
         self.publisher = self.create_publisher(PointCloud2, self.output_topic, qos_profile_sensor_data)
         self.subscription = self.create_subscription(
@@ -82,10 +88,27 @@ class IsaacPointCloudTimeAdapter(Node):
             f"lidar_type={self.lidar_type}, timestamp_unit={self.timestamp_unit}, "
             f"derive_time_if_missing={self.derive_time_if_missing}, "
             f"derive_ring_if_missing={self.derive_ring_if_missing}, "
-            f"derive_intensity_if_missing={self.derive_intensity_if_missing}"
+            f"derive_intensity_if_missing={self.derive_intensity_if_missing}, "
+            f"filter_invalid_xyz={self.filter_invalid_xyz}, "
+            f"max_abs_coordinate={self.max_abs_coordinate:g}"
         )
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
+        if self.filter_invalid_xyz:
+            msg, dropped_invalid = self._filter_invalid_xyz_points(msg)
+            if dropped_invalid:
+                self._dropped_invalid_xyz_total += dropped_invalid
+                # Avoid one warning per scan while still making the data issue visible.
+                if self._dropped_invalid_xyz_total == dropped_invalid or self._dropped_invalid_xyz_total % 5000 == 0:
+                    self.get_logger().warning(
+                        "Dropped invalid/huge XYZ points before FAST-LIO adaptation: "
+                        f"last_scan={dropped_invalid}, total={self._dropped_invalid_xyz_total}. "
+                        "This prevents PCL VoxelGrid integer-index overflow."
+                    )
+            if int(msg.width) * int(msg.height) == 0:
+                self.get_logger().error("All points were invalid after XYZ filtering; not publishing.")
+                return
+
         contract = timing_contract_for_lidar_type(
             lidar_type=self.lidar_type,
             timestamp_unit=self.timestamp_unit,
@@ -138,6 +161,67 @@ class IsaacPointCloudTimeAdapter(Node):
         if self.frame_id:
             adapted.header.frame_id = self.frame_id
         self._safe_publish(adapted)
+
+    def _filter_invalid_xyz_points(self, msg: PointCloud2) -> tuple[PointCloud2, int]:
+        fields_by_name = {field.name: field for field in msg.fields}
+        xyz_fields = [fields_by_name.get(name) for name in ("x", "y", "z")]
+        if any(field is None for field in xyz_fields):
+            return msg, 0
+
+        endian = ">" if msg.is_bigendian else "<"
+        unpackers = []
+        for field in xyz_fields:
+            if field.datatype == PointField.FLOAT32:
+                unpackers.append((struct.Struct(endian + "f"), field.offset))
+            elif field.datatype == PointField.FLOAT64:
+                unpackers.append((struct.Struct(endian + "d"), field.offset))
+            else:
+                return msg, 0
+
+        point_step = int(msg.point_step)
+        point_count = int(msg.width) * int(msg.height)
+        raw = bytes(msg.data)
+        max_abs = float(getattr(self, "max_abs_coordinate", 0.0))
+        enforce_bound = max_abs > 0.0 and math.isfinite(max_abs)
+        kept_chunks = []
+        dropped = 0
+        for index in range(point_count):
+            start = index * point_step
+            point = raw[start:start + point_step]
+            if len(point) != point_step:
+                dropped += 1
+                continue
+            values = []
+            valid = True
+            for unpacker, offset in unpackers:
+                end = offset + unpacker.size
+                if end > len(point):
+                    valid = False
+                    break
+                value = float(unpacker.unpack_from(point, offset)[0])
+                values.append(value)
+            if not valid or not all(math.isfinite(value) for value in values):
+                dropped += 1
+                continue
+            if enforce_bound and any(abs(value) > max_abs for value in values):
+                dropped += 1
+                continue
+            kept_chunks.append(point)
+
+        if dropped == 0:
+            return msg, 0
+
+        filtered = PointCloud2()
+        filtered.header = msg.header
+        filtered.height = 1
+        filtered.width = len(kept_chunks)
+        filtered.fields = list(msg.fields)
+        filtered.is_bigendian = msg.is_bigendian
+        filtered.point_step = msg.point_step
+        filtered.row_step = int(msg.point_step) * filtered.width
+        filtered.data = b"".join(kept_chunks)
+        filtered.is_dense = True
+        return filtered, dropped
 
     def _safe_publish(self, msg: PointCloud2) -> None:
         """Publish unless ROS shutdown is already invalidating the context."""

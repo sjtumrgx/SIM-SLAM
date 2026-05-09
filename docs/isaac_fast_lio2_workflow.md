@@ -181,10 +181,18 @@ For the current Isaac `x/y/z` PointCloud2 path, enable all derived fields explic
 ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
   derive_time_if_missing:=true \
   derive_ring_if_missing:=true \
-  derive_intensity_if_missing:=true
+  derive_intensity_if_missing:=true \
+  filter_invalid_xyz:=true \
+  max_abs_coordinate:=200.0
 ```
 
-Do not run standalone debug mode and default Route A wrapper mode at the same time; that creates duplicate `/points_fast_lio` publishers. If standalone adapter is already running, launch FAST-LIO with `enable_adapter:=false`. Passing the timing gate proves the PointCloud2 contract, not final physical scan-order or map-quality correctness.
+The adapter filters non-finite or huge Isaac XYZ returns before publishing
+`/points_fast_lio`; otherwise PCL VoxelGrid can overflow and FAST-LIO2 can fall
+into repeated `No Effective Points!`. Do not run standalone debug mode and
+default Route A wrapper mode at the same time; that creates duplicate
+`/points_fast_lio` publishers. If standalone adapter is already running, launch
+FAST-LIO with `enable_adapter:=false`. Passing the timing gate proves the
+PointCloud2 contract, not final physical scan-order or map-quality correctness.
 
 ## Stage 5: Run Timing Gate
 
@@ -218,14 +226,32 @@ ros2 launch deploy_policy go2w_controller.launch.py \
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
+For FAST-LIO2 debugging, start with conservative low-speed limits and the
+default hold gate. The controller holds the default pose and zero wheel velocity
+until a recent `cmd_vel` exists, which avoids a startup command impulse:
+
+```bash
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  max_cmd_vel_x:=0.05 \
+  max_cmd_vel_y:=0.03 \
+  max_cmd_vel_yaw:=0.10 \
+  hold_without_cmd_vel:=true \
+  cmd_vel_timeout_sec:=0.75 \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
+```
+
 Verify:
 
 ```bash
 ros2 topic echo /imu --once
+ros2 topic echo /joint_command --once
+ros2 topic echo /joint_states --once
 ros2 topic hz /points_fast_lio
 ```
 
-IMU and cloud values should change during motion.
+`/joint_command` should contain only finite `position` / `velocity` / `effort`
+values. IMU and cloud values should change smoothly during low-speed motion.
 
 ## Stage 7: Launch FAST-LIO2
 
@@ -247,11 +273,13 @@ ros2 topic echo /Odometry --once 2>/dev/null || true
 FAST-LIO2 logs must not contain missing-time, frame, sync, empty-cloud, or preprocess errors.
 The launch file also publishes static TF aliases that connect this FAST-LIO
 fork's hard-coded `camera_init`/`body` frames to the canonical
-`map`/`odom`/`base_link` and sensor frames:
+`map`/`odom`/`base_link` frame. Isaac's TransformTree owns the robot-internal
+link tree by default; Route A keeps `publish_sensor_static_tf:=false` so
+`base_link` does not get two parents:
 
 ```text
 camera_init -> map -> odom
-camera_init -> body -> base_link -> {imu_link,lidar_link}
+camera_init -> body -> base_link -> Isaac robot links
 ```
 
 ## Stage 8: RViz Proof
@@ -265,6 +293,14 @@ Expected view:
 - TF tree with FAST-LIO fork frames. This checked-out fork publishes `camera_init` → `body`, so the provided RViz config uses `camera_init` as the fixed frame.
 - live point cloud / registered cloud,
 - odometry/path changing during robot motion.
+
+The provided RViz config colors `/cloud_registered` with `AxisColor` on the Z
+axis instead of relying on the synthetic `intensity` field. If static FAST-LIO2
+outputs are healthy but the cloud looks all red or single-colored, classify it
+as a display/color issue before changing FAST-LIO2. The config also includes a
+disabled `Adapted FAST-LIO Input Debug` PointCloud2 display for
+`/points_fast_lio`; enable it only when you need to compare adapter output
+against `/cloud_registered`.
 
 ## Troubleshooting
 

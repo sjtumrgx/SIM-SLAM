@@ -93,6 +93,26 @@ def test_rtx_lidar_uses_full_scan_writer_by_default(monkeypatch):
     assert runner._rtx_lidar_pointcloud_writer_name(full_scan=True).endswith("PublishPointCloudBuffer")
 
 
+def test_tf_parent_defaults_to_articulation_root_to_avoid_base_link_double_parent(monkeypatch):
+    runner = _load_runner()
+    monkeypatch.setattr(sys, "argv", ["isaac_fast_lio2_go2w_scene.py"])
+
+    args = runner.parse_args()
+
+    assert runner._resolve_tf_parent_prim(args) == args.articulation_prim
+
+
+def test_frame_aliases_do_not_assign_base_link_to_both_robot_xform_and_articulation(monkeypatch):
+    runner = _load_runner()
+    monkeypatch.setattr(sys, "argv", ["isaac_fast_lio2_go2w_scene.py"])
+
+    args = runner.parse_args()
+    aliases = runner._frame_aliases(args, args.imu_prim, args.lidar_prim)
+
+    assert args.robot_prim not in aliases
+    assert aliases[args.articulation_prim] == "base_link"
+
+
 def test_partial_scan_writer_remains_available_for_debug(monkeypatch):
     runner = _load_runner()
     monkeypatch.setattr(sys, "argv", ["isaac_fast_lio2_go2w_scene.py", "--partial-scan-pointcloud"])

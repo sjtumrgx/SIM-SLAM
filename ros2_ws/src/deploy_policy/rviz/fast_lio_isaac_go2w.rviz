@@ -8,10 +8,45 @@ Visualization Manager:
       Enabled: true
       Name: TF
     - Class: rviz_default_plugins/PointCloud2
+      Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 3
+        Min Value: -1
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Color Transformer: AxisColor
+      Decay Time: 0
       Enabled: true
       Name: FAST-LIO Cloud
+      Position Transformer: XYZ
+      Size (Pixels): 3
+      Style: Flat Squares
       Topic:
         Value: /cloud_registered
+      Use Fixed Frame: true
+      Use rainbow: true
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.65
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 3
+        Min Value: -1
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: false
+      Name: Adapted FAST-LIO Input Debug
+      Position Transformer: XYZ
+      Size (Pixels): 2
+      Style: Flat Squares
+      Topic:
+        Value: /points_fast_lio
+      Use Fixed Frame: true
+      Use rainbow: true
     - Class: rviz_default_plugins/Odometry
       Enabled: true
       Name: FAST-LIO Odometry

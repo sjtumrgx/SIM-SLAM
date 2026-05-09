@@ -91,6 +91,40 @@ ros2 launch deploy_policy go2w_controller.launch.py \
 
 `go2w_controller.launch.py`、`go2_controller.launch.py`、`armdog_controller.launch.py` 会在启动前检查 `python_executable` 是否能同时导入 `rclpy` 和 `torch`，避免落到难读的底层 C 扩展错误。
 
+### Go2W 一发 `cmd_vel` 就乱跳，随后 FAST-LIO2 报 `No Effective Points!`
+
+如果静止时 FAST-LIO2 已经有 `/cloud_registered`、`/Odometry`、`/path`，但启动 Go2W 策略控制器或键盘 `cmd_vel` 后机器人突然乱跳，随后 FAST-LIO2 持续打印 `No Effective Points!`，优先按控制器安全问题排查，而不是先改 FAST-LIO2 核心算法。
+
+先用低速安全参数启动控制器：
+
+```bash
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  max_cmd_vel_x:=0.05 \
+  max_cmd_vel_y:=0.03 \
+  max_cmd_vel_yaw:=0.10 \
+  hold_without_cmd_vel:=true \
+  cmd_vel_timeout_sec:=0.75 \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
+```
+
+再用短脉冲验证：
+
+```bash
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+  '{linear: {x: 0.05, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}'
+ros2 topic echo /joint_command --once
+ros2 topic echo /joint_states --once
+ros2 topic echo /imu --once
+```
+
+判断标准：
+
+- `/joint_command` 的 `position`、`velocity`、`effort` 应该全是有限值，不应包含 `nan`。
+- 未收到近期 `/cmd_vel` 时，Go2W 控制器应保持默认姿态和零轮速。
+- 低速短脉冲后 `/joint_states` 应连续、`/imu` 应有限且合理。
+- 如果这些都正常但 FAST-LIO2 仍持续 `No Effective Points!`，再进入 LiDAR/IMU 外参、TF、点云时序和运动畸变排查。
+
 ### ROS 2 topic 互相看不到
 
 检查 DDS 域和组播：
@@ -170,6 +204,44 @@ ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
 
 ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true enable_adapter:=false
 ```
+
+### 建图几秒后 base 漂移，RViz 对所有 link 报 `No transform ... to [camera_init]`
+
+如果一开始能建图，随后 `base_link` / `FL_calf` 等所有机器人 link
+相对 `camera_init` 报 TF 断开，优先检查是否存在 `base_link` two parents：
+
+- FAST-LIO2 发布 `camera_init -> body`；
+- Route A 静态别名发布 `body -> base_link`；
+- Isaac `ROS2PublishTransformTree` 不应再发布另一个全局父边到同一个
+  `base_link`。
+
+本仓库 runner 默认把 TransformTree 的 parent prim 限定到 articulation
+root，并且 Route A 默认 `publish_sensor_static_tf:=false`，让 Isaac 负责
+机器人内部 link 树，FAST-LIO2 负责全局位姿边。不要把 runner
+`--tf-parent-prim` 改回 `/World`，除非你同时关闭 FAST-LIO2 侧
+`body -> base_link` 别名。
+
+### FAST-LIO2 同时出现 `VoxelGrid` overflow 和 `No Effective Points!`
+
+`[pcl::VoxelGrid::applyFilter] Leaf size is too small for the input dataset.
+Integer indices would overflow.` 通常说明进入 FAST-LIO2 的点云里有
+NaN/Inf 或极大坐标哨兵值；这不是单纯 RViz 颜色问题。Route A adapter
+默认启用 `filter_invalid_xyz:=true` 和 `max_abs_coordinate:=200.0`，会在
+发布 `/points_fast_lio` 前剔除这类点，避免 PCL VoxelGrid 整数索引溢出。
+
+复测：
+
+```bash
+ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true \
+  filter_invalid_xyz:=true \
+  max_abs_coordinate:=200.0 \
+  publish_sensor_static_tf:=false
+ros2 run deploy_policy check_pointcloud_timing.py --topic /points_fast_lio --dry-run-schema --json
+ros2 run tf2_ros tf2_echo camera_init base_link
+```
+
+如果仍持续 `No Effective Points!`，继续按 `/points_raw` full-scan 频率、
+`/points_fast_lio` 契约、`/imu` gravity、低速控制链路顺序排查。
 
 ## 真机 Livox / MID-360 + FAST-LIO2
 

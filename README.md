@@ -397,6 +397,17 @@ ros2 launch deploy_policy go2w_controller.launch.py \
   use_sim_time:=true \
   python_executable:=$PWD/.venv-ros2-policy/bin/python3
 
+# Go2W + FAST-LIO2 联调时推荐先用保守低速安全参数。
+# 控制器会在未收到近期 cmd_vel 时保持默认姿态和零轮速，避免启动瞬间动作突变。
+ros2 launch deploy_policy go2w_controller.launch.py \
+  use_sim_time:=true \
+  max_cmd_vel_x:=0.05 \
+  max_cmd_vel_y:=0.03 \
+  max_cmd_vel_yaw:=0.10 \
+  hold_without_cmd_vel:=true \
+  cmd_vel_timeout_sec:=0.75 \
+  python_executable:=$PWD/.venv-ros2-policy/bin/python3
+
 # 指定策略路径
 ros2 launch deploy_policy go2w_controller.launch.py \
   use_sim_time:=true \
@@ -615,6 +626,8 @@ ros2 launch deploy_policy isaac_fast_lio_inputs.launch.py \
   derive_time_if_missing:=true \
   derive_ring_if_missing:=true \
   derive_intensity_if_missing:=true \
+  filter_invalid_xyz:=true \
+  max_abs_coordinate:=200.0 \
   scan_line:=32 \
   frame_id:=lidar_link
 ```
@@ -647,10 +660,12 @@ ros2 launch deploy_policy fast_lio_isaac_go2w.launch.py rviz:=true
 
 - 自动 adapter：`enable_adapter:=true`，`/points_raw` → `/points_fast_lio`
 - 派生字段：`derive_time_if_missing:=true`、`derive_ring_if_missing:=true`、`derive_intensity_if_missing:=true`
+- 点过滤：`filter_invalid_xyz:=true`、`max_abs_coordinate:=200.0`，避免 NaN/Inf/极大坐标进入 FAST-LIO2 后触发 PCL `VoxelGrid` overflow
 - FAST-LIO2 config：`ros2_ws/src/deploy_policy/config/fast_lio/isaac_go2w.yaml`
 - 输入点云：`/points_fast_lio`
 - 输入 IMU：`/imu`
 - 仿真时间：`use_sim_time:=true`
+- TF：默认 `publish_sensor_static_tf:=false`，由 Isaac TransformTree 发布机器人内部 link，FAST-LIO2/Route A 只接 `camera_init -> body -> base_link`，避免 `base_link` two parents
 - RViz 配置：`ros2_ws/src/deploy_policy/rviz/fast_lio_isaac_go2w.rviz`
 
 如果你已经按 A3 单独启动了 adapter，请用下面的命令避免重复 `/points_fast_lio` publisher：
@@ -671,6 +686,10 @@ ros2 run tf2_ros tf2_echo camera_init body
 ```
 
 成功时应看到 `/points_fast_lio` 只有一个 adapter publisher、FAST-LIO2 是 subscriber，并出现 `/cloud_registered`、`/Odometry`、`/path` 等输出。启动初期偶发一次 `No point, skip this scan!` 可以忽略；如果持续出现 `No Effective Points!` 或 RViz 仍只有大箭头/椭圆等异常形状，应按顺序检查 `/points_raw` full-scan 频率、`/points_fast_lio` 契约、`/imu` gravity 和 FAST-LIO2 输出 topic，而不是先调整 RViz 样式。
+
+如果几秒后 base 漂移，并且 RViz 对 `FL_calf` 等所有 link 报 `No transform ... to [camera_init]`，不要再手动补 `base_link -> imu_link/lidar_link` 静态 TF；先确认使用默认 `publish_sensor_static_tf:=false`，并重启 Isaac runner，使其 TransformTree 只发布 articulation root 下的机器人内部 link 树。若同时看到 `VoxelGrid` overflow，说明 `/points_fast_lio` 仍有非法/极大 XYZ，保持 `filter_invalid_xyz:=true max_abs_coordinate:=200.0` 后复测。
+
+如果静止阶段 FAST-LIO2 正常，但启动 Go2W 控制器或键盘 `cmd_vel` 后机器人乱跳并随后出现 `No Effective Points!`，优先按控制器安全链路排查：使用上面的低速参数，检查 `/joint_command` 是否全为有限值、`/joint_states` 是否连续、`/imu` 是否仍合理，再判断 FAST-LIO2 是否真的输入失效。RViz 中 `/cloud_registered` 如果只是颜色偏红/单色，通常是合成 `intensity` 或颜色 transformer 问题；当前 RViz 配置使用 `AxisColor` 给注册点云按 Z 轴上色，并提供默认关闭的 `Adapted FAST-LIO Input Debug` 显示用于查看 `/points_fast_lio`。
 
 完整 IsaacSim runbook 见 [`docs/isaac_fast_lio2_workflow.md`](docs/isaac_fast_lio2_workflow.md)。
 
